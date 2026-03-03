@@ -1,0 +1,86 @@
+:root {
+  font-family:
+    Inter,
+    'Segoe UI',
+    sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #1f2a44;
+  background-color: #f8f9fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --color-primary: #1f2a44;
+  --color-accent: #2fb8a3;
+  --color-highlight: #f4b942;
+  --color-background: #f8f9fb;
+  --color-card: #ffffff;
+  --color-muted: #6b7280;
+  --color-border: #e5e7eb;
+  --color-danger: #e5484d;
+  --color-success: #22c55e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(47, 184, 163, 0.08), transparent 24%),
+    radial-gradient(circle at 90% 12%, rgba(244, 185, 66, 0.12), transparent 18%),
+    var(--color-background);
+}
+
+body,
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+h1,
+h2,
+h3,
+p,
+ul,
+ol {
+  margin-top: 0;
+}
+
+p,
+li {
+  font-size: 1rem;
+}
+
+ul,
+ol {
+  margin-bottom: 0;
+  padding-left: 1.25rem;
+}
