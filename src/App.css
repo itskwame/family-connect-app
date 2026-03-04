@@ -609,9 +609,52 @@
 
 .participant-picker,
 .conversation-stack,
-.chat-composer-column {
+.chat-composer-column,
+.comment-row {
   display: grid;
   gap: 0.75rem;
+}
+
+.feed-post-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.feed-post-card:first-child {
+  border-top: 0;
+}
+
+.real-tree-canvas,
+.tree-section,
+.tree-root-node,
+.tree-search-results {
+  display: grid;
+  gap: 1rem;
+}
+
+.tree-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.tree-node {
+  cursor: pointer;
+}
+
+.tree-node-root {
+  margin: 0 auto;
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  cursor: pointer;
+  text-align: left;
 }
 
 .checkbox-row {
@@ -784,6 +827,103 @@
     #ffffff;
   background-size: 24px 24px;
   overflow: hidden;
+}
+
+.tree-flow-shell {
+  height: 560px;
+  border: 1px solid rgba(31, 42, 68, 0.08);
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(47, 184, 163, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(248, 250, 252, 0.94), #ffffff);
+}
+
+.tree-canvas-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.tree-collapse-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.tree-flow-shell .react-flow {
+  background: transparent;
+}
+
+.tree-flow-shell .react-flow__node {
+  width: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tree-flow-shell .react-flow__handle {
+  opacity: 0;
+}
+
+.tree-flow-shell .react-flow__edge-textbg {
+  fill: rgba(255, 255, 255, 0.96);
+}
+
+.tree-flow-shell .react-flow__edge-text {
+  font-weight: 700;
+}
+
+.tree-flow-shell .react-flow__controls {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+}
+
+.tree-flow-node {
+  display: grid;
+  gap: 0.35rem;
+  width: 190px;
+  min-height: 110px;
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px solid var(--color-border);
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  text-align: left;
+}
+
+.tree-flow-connector {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(47, 184, 163, 0.45), rgba(31, 42, 68, 0.5));
+  box-shadow: 0 0 0 4px rgba(47, 184, 163, 0.1);
+}
+
+.tree-flow-node-root {
+  border-color: rgba(47, 184, 163, 0.35);
+  box-shadow: 0 14px 30px rgba(47, 184, 163, 0.16);
+}
+
+.tree-flow-node-parent {
+  border-color: rgba(31, 42, 68, 0.14);
+}
+
+.tree-flow-node-sibling {
+  border-color: rgba(37, 99, 235, 0.18);
+}
+
+.tree-flow-node-spouse {
+  border-color: rgba(180, 83, 9, 0.2);
+}
+
+.tree-flow-node-child {
+  border-color: rgba(22, 163, 74, 0.18);
+}
+
+.tree-legend {
+  margin-top: 1rem;
 }
 
 .tree-node {
@@ -1140,6 +1280,18 @@
   .card,
   .tree-canvas {
     padding: 1rem;
+  }
+
+  .tree-flow-shell {
+    height: 480px;
+  }
+
+  .tree-canvas-actions {
+    flex-direction: column;
+  }
+
+  .tree-collapse-actions {
+    flex-direction: column;
   }
 
   .quick-actions {

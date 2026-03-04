@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
+import dagre from 'dagre'
+import ReactFlow, { Background, Controls, MarkerType, Position } from 'reactflow'
+import type { Edge as FlowEdge, Node as FlowNode } from 'reactflow'
+import type { ReactFlowInstance } from 'reactflow'
+import 'reactflow/dist/style.css'
 import './App.css'
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabase'
 
@@ -64,6 +69,7 @@ type ConversationListItem = {
   title: string
   participantIds: string[]
   preview: string
+  unreadCount: number
 }
 type MessageItem = {
   id: string
@@ -71,6 +77,18 @@ type MessageItem = {
   content: string
   media_url: string | null
   created_at: string
+  read_at: string | null
+}
+type FeedPostItem = {
+  id: string
+  authorPersonId: string
+  authorName: string
+  content: string
+  mediaUrl: string | null
+  createdAt: string
+  likeCount: number
+  commentCount: number
+  likedByMe: boolean
 }
 type BusinessDirectoryItem = {
   id: string
@@ -82,6 +100,33 @@ type BusinessDirectoryItem = {
   businessCity: string | null
   businessState: string | null
   businessWebsite: string | null
+}
+type TreePersonItem = {
+  id: string
+  first_name: string
+  last_name: string
+  gender: string | null
+  birth_date: string | null
+  city: string | null
+  state: string | null
+  business_name: string | null
+}
+type TreeRelationshipItem = {
+  id: string
+  person_a_id: string
+  person_b_id: string
+  relationship_type: string
+  locked: boolean
+}
+type TreeRelativeLink = {
+  person: TreePersonItem
+  relationshipType: 'parent' | 'step_parent' | 'adopted_parent'
+}
+type TreeCollapseState = {
+  ancestors: boolean
+  descendants: boolean
+  siblings: boolean
+  spouses: boolean
 }
 
 const workspaceViews: WorkspaceView[] = ['home', 'tree', 'messages', 'profile', 'businesses']
@@ -147,6 +192,21 @@ function normalizeName(value: string) {
   return value.trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
+function isParentRelationshipType(value: string) {
+  return value === 'parent' || value === 'step_parent' || value === 'adopted_parent'
+}
+
+function isSamePersonName(
+  person: Pick<TreePersonItem, 'first_name' | 'last_name'>,
+  firstName: string,
+  lastName: string
+) {
+  return (
+    normalizeName(person.first_name) === normalizeName(firstName) &&
+    normalizeName(person.last_name) === normalizeName(lastName)
+  )
+}
+
 function buildProfileForm(record: ProfileRecord) {
   return {
     firstName: record.first_name ?? '',
@@ -176,6 +236,7 @@ function App() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('home')
   const [authMode, setAuthMode] = useState<'idle' | 'submitting'>('idle')
   const [familyMode, setFamilyMode] = useState<'idle' | 'submitting'>('idle')
+  const [homeMode, setHomeMode] = useState<'idle' | 'loading' | 'posting' | 'updating'>('idle')
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured())
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [authForm, setAuthForm] = useState({
@@ -187,12 +248,18 @@ function App() {
   const [passwordResetMessage, setPasswordResetMessage] = useState('')
   const [authError, setAuthError] = useState('')
   const [familyError, setFamilyError] = useState('')
+  const [homeError, setHomeError] = useState('')
   const [familyName, setFamilyName] = useState(() => localStorage.getItem(FAMILY_NAME_STORAGE_KEY) ?? '')
   const [currentFamilyId, setCurrentFamilyId] = useState(
     () => localStorage.getItem(FAMILY_ID_STORAGE_KEY) ?? ''
   )
   const [currentInviteToken, setCurrentInviteToken] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [feedPosts, setFeedPosts] = useState<FeedPostItem[]>([])
+  const [postDraft, setPostDraft] = useState({ content: '', mediaUrl: '' })
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
+  const [upcomingBirthdaysCount, setUpcomingBirthdaysCount] = useState(0)
+  const [newMembersCount, setNewMembersCount] = useState(0)
   const [onboardingMode, setOnboardingMode] = useState<'idle' | 'submitting'>('idle')
   const [onboardingError, setOnboardingError] = useState('')
   const [profileMode, setProfileMode] = useState<'idle' | 'loading' | 'saving'>('idle')
@@ -205,6 +272,31 @@ function App() {
   const [businessStateFilter, setBusinessStateFilter] = useState('All')
   const [selectedBusinessId, setSelectedBusinessId] = useState('')
   const [businessDirectoryItems, setBusinessDirectoryItems] = useState<BusinessDirectoryItem[]>([])
+  const [treeMode, setTreeMode] = useState<'idle' | 'loading' | 'saving'>('idle')
+  const [treeError, setTreeError] = useState('')
+  const [treePeople, setTreePeople] = useState<TreePersonItem[]>([])
+  const [treeRelationships, setTreeRelationships] = useState<TreeRelationshipItem[]>([])
+  const [treeRootId, setTreeRootId] = useState('')
+  const [selectedTreePersonId, setSelectedTreePersonId] = useState('')
+  const [treeSearch, setTreeSearch] = useState('')
+  const [treeBranchFilter, setTreeBranchFilter] = useState<'both' | 'maternal' | 'paternal'>('both')
+  const [showAddRelationship, setShowAddRelationship] = useState(false)
+  const [treeFlowInstance, setTreeFlowInstance] = useState<ReactFlowInstance | null>(null)
+  const [collapsedTreeSections, setCollapsedTreeSections] = useState<TreeCollapseState>({
+    ancestors: false,
+    descendants: false,
+    siblings: false,
+    spouses: false,
+  })
+  const [addRelationshipForm, setAddRelationshipForm] = useState({
+    relationshipType: 'parent',
+    existingPersonId: '',
+    useExisting: true,
+    firstName: '',
+    lastName: '',
+    gender: '',
+    birthDate: '',
+  })
   const [messagingMode, setMessagingMode] = useState<'idle' | 'loading' | 'sending' | 'creating'>('idle')
   const [messagingError, setMessagingError] = useState('')
   const [peopleOptions, setPeopleOptions] = useState<PersonOption[]>([])
@@ -610,6 +702,532 @@ function App() {
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId) {
+      setTreePeople([])
+      setTreeRelationships([])
+      setTreeRootId('')
+      setSelectedTreePersonId('')
+      return
+    }
+
+    let active = true
+    setTreeMode('loading')
+    setTreeError('')
+
+    void Promise.all([
+      client
+        .from('people')
+        .select('id, first_name, last_name, gender, birth_date, city, state, business_name')
+        .eq('family_id', currentFamilyId),
+      client
+        .from('relationships')
+        .select('id, person_a_id, person_b_id, relationship_type, locked')
+        .eq('family_id', currentFamilyId),
+    ]).then(([peopleResponse, relationshipsResponse]) => {
+      if (!active) {
+        return
+      }
+
+      setTreeMode('idle')
+
+      const error = peopleResponse.error ?? relationshipsResponse.error
+
+      if (error) {
+        setTreeError(error.message)
+        return
+      }
+
+      const people = (peopleResponse.data ?? []) as TreePersonItem[]
+      const relationships = (relationshipsResponse.data ?? []) as TreeRelationshipItem[]
+
+      setTreePeople(people)
+      setTreeRelationships(relationships)
+      setTreeRootId((current) =>
+        current && people.some((person) => person.id === current)
+          ? current
+          : currentPersonId && people.some((person) => person.id === currentPersonId)
+            ? currentPersonId
+            : people[0]?.id ?? ''
+      )
+      setSelectedTreePersonId((current) =>
+        current && people.some((person) => person.id === current)
+          ? current
+          : currentPersonId && people.some((person) => person.id === currentPersonId)
+            ? currentPersonId
+            : people[0]?.id ?? ''
+      )
+    })
+
+    return () => {
+      active = false
+    }
+  }, [currentFamilyId, currentPersonId, isAuthenticated])
+
+  const treePeopleLookup = useMemo(
+    () => new Map(treePeople.map((person) => [person.id, person])),
+    [treePeople]
+  )
+
+  const selectedTreePerson =
+    treePeopleLookup.get(selectedTreePersonId) ??
+    treePeopleLookup.get(treeRootId) ??
+    null
+
+  const rootTreePerson = treePeopleLookup.get(treeRootId) ?? null
+
+  const selectedTreeConnections = useMemo(() => {
+    if (!selectedTreePerson) {
+      return {
+        parents: [] as TreeRelativeLink[],
+        grandparents: [] as TreeRelativeLink[],
+        children: [] as TreeRelativeLink[],
+        grandchildren: [] as TreeRelativeLink[],
+        spouses: [] as TreePersonItem[],
+        siblings: [] as TreePersonItem[],
+        siblingParentLinks: new Map<string, Array<{ parentId: string; relationshipType: string }>>(),
+      }
+    }
+
+    const parentLinks: TreeRelativeLink[] = []
+    const childLinks: TreeRelativeLink[] = []
+    const spouses: TreePersonItem[] = []
+    const siblingIds = new Set<string>()
+    const siblingParentLinks = new Map<string, Map<string, string>>()
+    const grandparentLinks = new Map<string, TreeRelativeLink>()
+    const grandchildLinks = new Map<string, TreeRelativeLink>()
+
+    for (const relationship of treeRelationships) {
+      if (isParentRelationshipType(relationship.relationship_type)) {
+        if (relationship.person_b_id === selectedTreePerson.id) {
+          const parent = treePeopleLookup.get(relationship.person_a_id)
+          if (parent) {
+            parentLinks.push({
+              person: parent,
+              relationshipType: relationship.relationship_type as TreeRelativeLink['relationshipType'],
+            })
+          }
+        }
+
+        if (relationship.person_a_id === selectedTreePerson.id) {
+          const child = treePeopleLookup.get(relationship.person_b_id)
+          if (child) {
+            childLinks.push({
+              person: child,
+              relationshipType: relationship.relationship_type as TreeRelativeLink['relationshipType'],
+            })
+          }
+        }
+      }
+
+      if (relationship.relationship_type === 'spouse') {
+        if (relationship.person_a_id === selectedTreePerson.id) {
+          const spouse = treePeopleLookup.get(relationship.person_b_id)
+          if (spouse) spouses.push(spouse)
+        } else if (relationship.person_b_id === selectedTreePerson.id) {
+          const spouse = treePeopleLookup.get(relationship.person_a_id)
+          if (spouse) spouses.push(spouse)
+        }
+      }
+
+      if (relationship.relationship_type === 'sibling') {
+        if (relationship.person_a_id === selectedTreePerson.id) {
+          siblingIds.add(relationship.person_b_id)
+        } else if (relationship.person_b_id === selectedTreePerson.id) {
+          siblingIds.add(relationship.person_a_id)
+        }
+      }
+    }
+
+    const uniqueRelativeLinks = (items: TreeRelativeLink[]) =>
+      Array.from(new Map(items.map((item) => [item.person.id, item])).values())
+
+    const filteredParents = uniqueRelativeLinks(parentLinks).filter(({ person }) => {
+      if (treeBranchFilter === 'maternal') {
+        return (person.gender ?? '').toLowerCase().startsWith('f')
+      }
+      if (treeBranchFilter === 'paternal') {
+        return (person.gender ?? '').toLowerCase().startsWith('m')
+      }
+      return true
+    })
+
+    const selectedParentIds = Array.from(new Set(filteredParents.map(({ person }) => person.id)))
+
+    if (selectedParentIds.length > 0) {
+      for (const relationship of treeRelationships) {
+        if (
+          isParentRelationshipType(relationship.relationship_type) &&
+          selectedParentIds.includes(relationship.person_a_id) &&
+          relationship.person_b_id !== selectedTreePerson.id
+        ) {
+          siblingIds.add(relationship.person_b_id)
+
+          if (!siblingParentLinks.has(relationship.person_b_id)) {
+            siblingParentLinks.set(relationship.person_b_id, new Map<string, string>())
+          }
+
+          siblingParentLinks
+            .get(relationship.person_b_id)
+            ?.set(relationship.person_a_id, relationship.relationship_type)
+        }
+      }
+    }
+
+    const uniqueById = (items: TreePersonItem[]) =>
+      Array.from(new Map(items.map((item) => [item.id, item])).values())
+
+    const siblings = uniqueById(
+      Array.from(siblingIds)
+        .map((personId) => treePeopleLookup.get(personId))
+        .filter((person): person is TreePersonItem => Boolean(person))
+    )
+
+    const selectedChildIds = Array.from(new Set(childLinks.map(({ person }) => person.id)))
+
+    for (const relationship of treeRelationships) {
+      if (
+        isParentRelationshipType(relationship.relationship_type) &&
+        selectedParentIds.includes(relationship.person_b_id)
+      ) {
+        const grandparent = treePeopleLookup.get(relationship.person_a_id)
+        if (grandparent) {
+          grandparentLinks.set(relationship.person_a_id, {
+            person: grandparent,
+            relationshipType: relationship.relationship_type as TreeRelativeLink['relationshipType'],
+          })
+        }
+      }
+
+      if (
+        isParentRelationshipType(relationship.relationship_type) &&
+        selectedChildIds.includes(relationship.person_a_id)
+      ) {
+        const grandchild = treePeopleLookup.get(relationship.person_b_id)
+        if (grandchild) {
+          grandchildLinks.set(relationship.person_b_id, {
+            person: grandchild,
+            relationshipType: relationship.relationship_type as TreeRelativeLink['relationshipType'],
+          })
+        }
+      }
+    }
+
+    return {
+      parents: filteredParents,
+      grandparents: Array.from(grandparentLinks.values()).filter(({ person }) => {
+        if (treeBranchFilter === 'maternal') {
+          return (person.gender ?? '').toLowerCase().startsWith('f')
+        }
+        if (treeBranchFilter === 'paternal') {
+          return (person.gender ?? '').toLowerCase().startsWith('m')
+        }
+        return true
+      }),
+      children: uniqueRelativeLinks(childLinks),
+      grandchildren: Array.from(grandchildLinks.values()),
+      spouses: uniqueById(spouses),
+      siblings,
+      siblingParentLinks: new Map(
+        Array.from(siblingParentLinks.entries()).map(([personId, parentLinks]) => [
+          personId,
+          Array.from(parentLinks.entries())
+            .filter(([parentId]) => filteredParents.some((parent) => parent.person.id === parentId))
+            .map(([parentId, relationshipType]) => ({ parentId, relationshipType })),
+        ])
+      ),
+    }
+  }, [selectedTreePerson, treeRelationships, treePeopleLookup, treeBranchFilter])
+
+  const searchedTreePeople = useMemo(() => {
+    const normalized = treeSearch.trim().toLowerCase()
+    if (normalized === '') return treePeople
+    return treePeople.filter((person) =>
+      `${person.first_name} ${person.last_name}`.trim().toLowerCase().includes(normalized)
+    )
+  }, [treePeople, treeSearch])
+
+  const treeSectionCounts = useMemo(
+    () => ({
+      ancestors: selectedTreeConnections.parents.length + selectedTreeConnections.grandparents.length,
+      descendants: selectedTreeConnections.children.length + selectedTreeConnections.grandchildren.length,
+      siblings: selectedTreeConnections.siblings.length,
+      spouses: selectedTreeConnections.spouses.length,
+    }),
+    [selectedTreeConnections]
+  )
+
+  const selectedTreeGraph = useMemo(() => {
+    if (!selectedTreePerson) {
+      return { nodes: [] as FlowNode[], edges: [] as FlowEdge[] }
+    }
+
+    const graph = new dagre.graphlib.Graph()
+    graph.setGraph({
+      rankdir: 'TB',
+      ranksep: 110,
+      nodesep: 44,
+      marginx: 32,
+      marginy: 32,
+    })
+    graph.setDefaultEdgeLabel(() => ({}))
+
+    const nodeDefinitions = new Map<string, FlowNode>()
+    const edgeDefinitions = new Map<string, FlowEdge>()
+    const personNodeSize = { width: 190, height: 118 }
+    const connectorNodeSize = { width: 18, height: 18 }
+
+    const addGraphNode = (
+      id: string,
+      width: number,
+      height: number,
+      definition: Omit<FlowNode, 'position'>
+    ) => {
+      graph.setNode(id, { width, height })
+      nodeDefinitions.set(id, {
+        ...definition,
+        position: { x: 0, y: 0 },
+      })
+    }
+
+    const addNode = (person: TreePersonItem, tone: 'root' | 'parent' | 'sibling' | 'spouse' | 'child') => {
+      const title = `${person.first_name} ${person.last_name}`.trim()
+      const subtitle = [person.city, person.state].filter(Boolean).join(', ') || person.birth_date || 'No details yet'
+
+      addGraphNode(person.id, personNodeSize.width, personNodeSize.height, {
+        id: person.id,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        draggable: false,
+        selectable: true,
+        data: {
+          label: (
+            <div className={`tree-flow-node tree-flow-node-${tone}`}>
+              <div className="node-avatar">{person.first_name.slice(0, 1).toUpperCase()}</div>
+              <strong>{title}</strong>
+              <span>{subtitle}</span>
+            </div>
+          ),
+        },
+      })
+    }
+
+    const addConnectorNode = (id: string) => {
+      addGraphNode(id, connectorNodeSize.width, connectorNodeSize.height, {
+        id,
+        draggable: false,
+        selectable: false,
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        data: {
+          label: <div className="tree-flow-connector" aria-hidden="true" />,
+        },
+      })
+    }
+
+    const addEdge = (
+      id: string,
+      source: string,
+      target: string,
+      relationshipType: 'parent' | 'step_parent' | 'adopted_parent' | 'spouse' | 'sibling'
+    ) => {
+      const isParentEdge =
+        relationshipType === 'parent' ||
+        relationshipType === 'step_parent' ||
+        relationshipType === 'adopted_parent'
+      const label =
+        relationshipType === 'step_parent'
+          ? 'step parent'
+          : relationshipType === 'adopted_parent'
+            ? 'adoptive parent'
+            : relationshipType
+
+      graph.setEdge(source, target)
+      edgeDefinitions.set(id, {
+        id,
+        source,
+        target,
+        type: relationshipType === 'spouse' ? 'straight' : 'smoothstep',
+        label,
+        animated: relationshipType === 'spouse',
+        markerEnd: isParentEdge ? { type: MarkerType.ArrowClosed } : undefined,
+        style:
+          relationshipType === 'spouse'
+            ? { strokeWidth: 2, stroke: '#b45309' }
+            : relationshipType === 'sibling'
+              ? { strokeWidth: 2, stroke: '#2563eb' }
+              : relationshipType === 'step_parent'
+                ? { strokeWidth: 2.5, stroke: '#7c3aed', strokeDasharray: '8 6' }
+                : relationshipType === 'adopted_parent'
+                  ? { strokeWidth: 2.5, stroke: '#059669', strokeDasharray: '4 4' }
+                  : { strokeWidth: 2.5, stroke: '#1f2937' },
+        labelStyle: { fill: '#111827', fontSize: 11, fontWeight: 600 },
+      })
+    }
+
+    addNode(selectedTreePerson, 'root')
+
+    const showAncestors = !collapsedTreeSections.ancestors
+    const showDescendants = !collapsedTreeSections.descendants
+    const showSiblings = !collapsedTreeSections.siblings
+    const showSpouses = !collapsedTreeSections.spouses
+
+    const visibleSpouses = showSpouses ? selectedTreeConnections.spouses : []
+    const visibleParents = showAncestors ? selectedTreeConnections.parents : []
+    const visibleGrandparents = showAncestors ? selectedTreeConnections.grandparents : []
+    const visibleChildren = showDescendants ? selectedTreeConnections.children : []
+    const visibleGrandchildren = showDescendants ? selectedTreeConnections.grandchildren : []
+    const visibleSiblings = showSiblings ? selectedTreeConnections.siblings : []
+
+    const familyConnectorId =
+      visibleChildren.length > 0 && visibleSpouses.length > 0 ? `family-group-${selectedTreePerson.id}` : ''
+
+    if (familyConnectorId) {
+      addConnectorNode(familyConnectorId)
+      addEdge(`family-root-${selectedTreePerson.id}`, selectedTreePerson.id, familyConnectorId, 'spouse')
+    }
+
+    visibleSpouses.forEach((person) => {
+      addNode(person, 'spouse')
+      addEdge(`spouse-${selectedTreePerson.id}-${person.id}`, selectedTreePerson.id, person.id, 'spouse')
+
+      if (familyConnectorId) {
+        addEdge(`family-spouse-${person.id}`, person.id, familyConnectorId, 'spouse')
+      }
+    })
+
+    visibleGrandparents.forEach(({ person }) => {
+      addNode(person, 'parent')
+    })
+
+    visibleParents.forEach(({ person, relationshipType }) => {
+      addNode(person, 'parent')
+      addEdge(`parent-${person.id}-${selectedTreePerson.id}`, person.id, selectedTreePerson.id, relationshipType)
+
+      const grandparentLinks = visibleGrandparents.filter(
+        ({ person: grandparent }) =>
+          treeRelationships.some(
+            (relationship) =>
+              relationship.person_a_id === grandparent.id &&
+              relationship.person_b_id === person.id &&
+              isParentRelationshipType(relationship.relationship_type)
+          )
+      )
+
+      grandparentLinks.forEach(({ person: grandparent }) => {
+        const relationship = treeRelationships.find(
+          (item) =>
+            item.person_a_id === grandparent.id &&
+            item.person_b_id === person.id &&
+            isParentRelationshipType(item.relationship_type)
+        )
+
+        addEdge(
+          `grandparent-${grandparent.id}-${person.id}`,
+          grandparent.id,
+          person.id,
+          (relationship?.relationship_type as TreeRelativeLink['relationshipType']) ?? 'parent'
+        )
+      })
+    })
+
+    visibleSiblings.forEach((person) => {
+      addNode(person, 'sibling')
+
+      const parentLinks = selectedTreeConnections.siblingParentLinks.get(person.id) ?? []
+      const visibleParentLinks = parentLinks.filter(({ parentId }) =>
+        visibleParents.some((parent) => parent.person.id === parentId)
+      )
+
+      if (visibleParentLinks.length > 0) {
+        const siblingConnectorId = `sibling-group-${selectedTreePerson.id}-${person.id}`
+        addConnectorNode(siblingConnectorId)
+
+        visibleParentLinks.forEach(({ parentId, relationshipType }) => {
+          addEdge(
+            `shared-parent-${parentId}-${siblingConnectorId}`,
+            parentId,
+            siblingConnectorId,
+            relationshipType as TreeRelativeLink['relationshipType']
+          )
+        })
+
+        addEdge(`shared-sibling-${siblingConnectorId}-${person.id}`, siblingConnectorId, person.id, 'sibling')
+      } else {
+        addEdge(`sibling-${selectedTreePerson.id}-${person.id}`, selectedTreePerson.id, person.id, 'sibling')
+      }
+    })
+
+    visibleChildren.forEach(({ person, relationshipType }) => {
+      addNode(person, 'child')
+      addEdge(
+        `child-${selectedTreePerson.id}-${person.id}`,
+        familyConnectorId || selectedTreePerson.id,
+        person.id,
+        relationshipType
+      )
+    })
+
+    visibleGrandchildren.forEach(({ person }) => {
+      addNode(person, 'child')
+
+      const parentRelationship = treeRelationships.find(
+        (relationship) =>
+          relationship.person_b_id === person.id &&
+          visibleChildren.some(({ person: child }) => child.id === relationship.person_a_id) &&
+          isParentRelationshipType(relationship.relationship_type)
+      )
+
+      if (parentRelationship) {
+        addEdge(
+          `grandchild-${parentRelationship.person_a_id}-${person.id}`,
+          parentRelationship.person_a_id,
+          person.id,
+          parentRelationship.relationship_type as TreeRelativeLink['relationshipType']
+        )
+      }
+    })
+
+    dagre.layout(graph)
+
+    const nodes = Array.from(nodeDefinitions.values()).map((node) => {
+      const layoutNode = graph.node(node.id)
+      const isConnectorNode =
+        node.id.startsWith('family-group-') || node.id.startsWith('sibling-group-')
+      const fallbackWidth = isConnectorNode ? connectorNodeSize.width : personNodeSize.width
+      const fallbackHeight = isConnectorNode ? connectorNodeSize.height : personNodeSize.height
+
+      return {
+        ...node,
+        position: {
+          x: layoutNode.x - (layoutNode.width ?? fallbackWidth) / 2,
+          y: layoutNode.y - (layoutNode.height ?? fallbackHeight) / 2,
+        },
+      }
+    })
+
+    const edges = Array.from(edgeDefinitions.values())
+
+    return { nodes, edges }
+  }, [collapsedTreeSections, selectedTreeConnections, selectedTreePerson, treeRelationships])
+
+  useEffect(() => {
+    if (!treeFlowInstance || selectedTreeGraph.nodes.length === 0) {
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      treeFlowInstance.fitView({
+        duration: 250,
+        padding: 0.2,
+      })
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [selectedTreeGraph, treeFlowInstance])
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId) {
       setBusinessDirectoryItems([])
       setSelectedBusinessId('')
       return
@@ -693,6 +1311,121 @@ function App() {
     filteredBusinessDirectoryItems.find((item) => item.id === selectedBusinessId) ??
     filteredBusinessDirectoryItems[0] ??
     null
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId || !currentPersonId) {
+      setFeedPosts([])
+      setUpcomingBirthdaysCount(0)
+      setNewMembersCount(0)
+      return
+    }
+
+    let active = true
+    setHomeMode('loading')
+    setHomeError('')
+
+    void (async () => {
+      const [postsResponse, likesResponse, commentsResponse, peopleResponse] = await Promise.all([
+        client
+          .from('posts')
+          .select('id, author_person_id, content, media_url, created_at')
+          .eq('family_id', currentFamilyId)
+          .order('created_at', { ascending: false })
+          .limit(20),
+        client.from('post_likes').select('post_id, person_id'),
+        client.from('post_comments').select('id, post_id, person_id, content'),
+        client
+          .from('people')
+          .select('id, first_name, last_name, birth_date, created_at')
+          .eq('family_id', currentFamilyId),
+      ])
+
+      if (!active) {
+        return
+      }
+
+      const error =
+        postsResponse.error ?? likesResponse.error ?? commentsResponse.error ?? peopleResponse.error
+
+      if (error) {
+        setHomeMode('idle')
+        setHomeError(error.message)
+        return
+      }
+
+      const people = peopleResponse.data ?? []
+      const personLookup = new Map(
+        people.map((person) => [person.id, `${person.first_name} ${person.last_name}`.trim()])
+      )
+
+      const likeRows = likesResponse.data ?? []
+      const commentRows = commentsResponse.data ?? []
+
+      const likeCountByPost = new Map<string, number>()
+      const likedByMePosts = new Set<string>()
+      for (const row of likeRows) {
+        likeCountByPost.set(row.post_id, (likeCountByPost.get(row.post_id) ?? 0) + 1)
+        if (row.person_id === currentPersonId) {
+          likedByMePosts.add(row.post_id)
+        }
+      }
+
+      const commentCountByPost = new Map<string, number>()
+      for (const row of commentRows) {
+        commentCountByPost.set(row.post_id, (commentCountByPost.get(row.post_id) ?? 0) + 1)
+      }
+
+      setFeedPosts(
+        (postsResponse.data ?? []).map((post) => ({
+          id: post.id,
+          authorPersonId: post.author_person_id,
+          authorName: personLookup.get(post.author_person_id) ?? 'Family member',
+          content: post.content,
+          mediaUrl: post.media_url,
+          createdAt: post.created_at,
+          likeCount: likeCountByPost.get(post.id) ?? 0,
+          commentCount: commentCountByPost.get(post.id) ?? 0,
+          likedByMe: likedByMePosts.has(post.id),
+        }))
+      )
+
+      const now = new Date()
+      const todayMonthDay = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const futureLimit = new Date(now)
+      futureLimit.setDate(futureLimit.getDate() + 30)
+      const futureLimitMonthDay = `${String(futureLimit.getMonth() + 1).padStart(2, '0')}-${String(
+        futureLimit.getDate()
+      ).padStart(2, '0')}`
+
+      const upcomingBirthdays = people.filter((person) => {
+        if (!person.birth_date) {
+          return false
+        }
+
+        const monthDay = person.birth_date.slice(5, 10)
+
+        if (todayMonthDay <= futureLimitMonthDay) {
+          return monthDay >= todayMonthDay && monthDay <= futureLimitMonthDay
+        }
+
+        return monthDay >= todayMonthDay || monthDay <= futureLimitMonthDay
+      }).length
+
+      const sevenDaysAgo = new Date(now)
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+      const newMembers = people.filter((person) => new Date(person.created_at).getTime() >= sevenDaysAgo.getTime()).length
+
+      setUpcomingBirthdaysCount(upcomingBirthdays)
+      setNewMembersCount(newMembers)
+      setHomeMode('idle')
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [currentFamilyId, currentPersonId, isAuthenticated])
 
   useEffect(() => {
     const client = getSupabaseClient()
@@ -803,7 +1536,7 @@ function App() {
         conversationIds.length > 0
           ? client
               .from('messages')
-              .select('id, conversation_id, content, media_url, created_at')
+              .select('id, conversation_id, content, media_url, created_at, sender_person_id, read_at')
               .in('conversation_id', conversationIds)
               .order('created_at', { ascending: false })
           : Promise.resolve({ data: [], error: null }),
@@ -833,11 +1566,19 @@ function App() {
       }
 
       const previewByConversation = new Map<string, string>()
+      const unreadCountByConversation = new Map<string, number>()
       for (const row of lastMessagesResponse.data ?? []) {
         if (!previewByConversation.has(row.conversation_id)) {
           previewByConversation.set(
             row.conversation_id,
             row.content.trim() || (row.media_url ? 'Media attachment' : 'No messages yet.')
+          )
+        }
+
+        if (row.sender_person_id !== currentPersonId && row.read_at === null) {
+          unreadCountByConversation.set(
+            row.conversation_id,
+            (unreadCountByConversation.get(row.conversation_id) ?? 0) + 1
           )
         }
       }
@@ -864,6 +1605,7 @@ function App() {
           title,
           participantIds,
           preview: previewByConversation.get(conversation.id) ?? 'No messages yet.',
+          unreadCount: unreadCountByConversation.get(conversation.id) ?? 0,
         } as ConversationListItem
       })
 
@@ -900,10 +1642,10 @@ function App() {
 
     void client
       .from('messages')
-      .select('id, sender_person_id, content, media_url, created_at')
+      .select('id, sender_person_id, content, media_url, created_at, read_at')
       .eq('conversation_id', selectedConversationId)
       .order('created_at', { ascending: true })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (!active) {
           return
         }
@@ -914,44 +1656,133 @@ function App() {
           return
         }
 
-        setMessages((data ?? []) as MessageItem[])
+        const loadedMessages = (data ?? []) as MessageItem[]
+        setMessages(loadedMessages)
+        setConversations((current) =>
+          current.map((conversation) =>
+            conversation.id === selectedConversationId
+              ? { ...conversation, unreadCount: 0 }
+              : conversation
+          )
+        )
+
+        const unreadIncomingIds = loadedMessages
+          .filter((message) => message.sender_person_id !== currentPersonId && message.read_at === null)
+          .map((message) => message.id)
+
+        if (unreadIncomingIds.length > 0) {
+          const nowIso = new Date().toISOString()
+          const { error: markReadError } = await client
+            .from('messages')
+            .update({ read_at: nowIso })
+            .in('id', unreadIncomingIds)
+
+          if (!active) {
+            return
+          }
+
+          if (markReadError) {
+            setMessagingMode('idle')
+            setMessagingError(markReadError.message)
+            return
+          }
+
+          setMessages((current) =>
+            current.map((message) =>
+              unreadIncomingIds.includes(message.id) ? { ...message, read_at: nowIso } : message
+            )
+          )
+        }
+
         setMessagingMode('idle')
       })
 
+    return () => {
+      active = false
+    }
+  }, [currentPersonId, isAuthenticated, selectedConversationId])
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId || !currentPersonId) {
+      return
+    }
+
     const channel = client
-      .channel(`messages:${selectedConversationId}`)
+      .channel(`family-messages:${currentFamilyId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: `conversation_id=eq.${selectedConversationId}`,
         },
         (payload) => {
-          const nextMessage = payload.new as MessageItem
-          setMessages((current) =>
-            current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]
-          )
+          const nextMessage = payload.new as MessageItem & { conversation_id?: string }
+          const conversationId = nextMessage.conversation_id
+
+          if (!conversationId) {
+            return
+          }
+
+          let belongsToKnownConversation = false
+
           setConversations((current) =>
-            current.map((conversation) =>
-              conversation.id === selectedConversationId
-                ? {
-                    ...conversation,
-                    preview: nextMessage.content.trim() || (nextMessage.media_url ? 'Media attachment' : 'No messages yet.'),
-                  }
-                : conversation
-            )
+            current.map((conversation) => {
+              if (conversation.id !== conversationId) {
+                return conversation
+              }
+
+              belongsToKnownConversation = true
+              const preview =
+                nextMessage.content.trim() ||
+                (nextMessage.media_url ? 'Media attachment' : 'No messages yet.')
+              const isUnread =
+                conversationId !== selectedConversationId &&
+                nextMessage.sender_person_id !== currentPersonId &&
+                nextMessage.read_at === null
+
+              return {
+                ...conversation,
+                preview,
+                unreadCount: isUnread ? conversation.unreadCount + 1 : conversation.unreadCount,
+              }
+            })
           )
+
+          if (!belongsToKnownConversation) {
+            return
+          }
+
+          if (conversationId === selectedConversationId) {
+            setMessages((current) =>
+              current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]
+            )
+
+            if (nextMessage.sender_person_id !== currentPersonId) {
+              const nowIso = new Date().toISOString()
+
+              void client
+                .from('messages')
+                .update({ read_at: nowIso })
+                .eq('id', nextMessage.id)
+
+              setMessages((current) =>
+                current.map((message) =>
+                  message.id === nextMessage.id ? { ...message, read_at: nowIso } : message
+                )
+              )
+            }
+          }
         }
       )
       .subscribe()
 
     return () => {
-      active = false
       void client.removeChannel(channel)
     }
-  }, [isAuthenticated, selectedConversationId])
+  }, [currentFamilyId, currentPersonId, isAuthenticated, selectedConversationId])
 
   useEffect(() => {
     if (currentPersonId) {
@@ -1042,6 +1873,14 @@ function App() {
     setNewConversationParticipantIds((current) =>
       current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
     )
+  }
+
+  const resetHomeFeedback = () => {
+    setHomeError('')
+  }
+
+  const resetTreeFeedback = () => {
+    setTreeError('')
   }
 
   const handlePhotoSelection = (file: File | null) => {
@@ -1961,12 +2800,377 @@ function App() {
             : 'Group Chat',
       participantIds,
       preview: 'No messages yet.',
+      unreadCount: 0,
     }
 
     setConversations((current) => [newConversation, ...current])
     setSelectedConversationId(conversation.id)
     setNewConversationParticipantIds([])
     setNewConversationType('direct')
+  }
+
+  const handleCreatePost = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!currentFamilyId || !currentPersonId) {
+      setHomeError('A family and active profile are required to create a post.')
+      return
+    }
+
+    if (postDraft.content.trim() === '' && postDraft.mediaUrl.trim() === '') {
+      setHomeError('Add post content or a media URL before posting.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setHomeError('Supabase is not configured. Posting requires a live client.')
+      return
+    }
+
+    setHomeMode('posting')
+    resetHomeFeedback()
+
+    const { data, error } = await client
+      .from('posts')
+      .insert({
+        family_id: currentFamilyId,
+        author_person_id: currentPersonId,
+        content: postDraft.content.trim(),
+        media_url: postDraft.mediaUrl.trim() || null,
+      })
+      .select('id, author_person_id, content, media_url, created_at')
+      .single()
+
+    setHomeMode('idle')
+
+    if (error) {
+      setHomeError(error.message)
+      return
+    }
+
+    setFeedPosts((current) => [
+      {
+        id: data.id,
+        authorPersonId: data.author_person_id,
+        authorName: currentPersonName || 'You',
+        content: data.content,
+        mediaUrl: data.media_url,
+        createdAt: data.created_at,
+        likeCount: 0,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      ...current,
+    ])
+    setPostDraft({ content: '', mediaUrl: '' })
+  }
+
+  const handleTogglePostLike = async (postId: string) => {
+    if (!currentPersonId) {
+      setHomeError('An active profile is required to like posts.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setHomeError('Supabase is not configured. Likes require a live client.')
+      return
+    }
+
+    const targetPost = feedPosts.find((post) => post.id === postId)
+
+    if (!targetPost) {
+      return
+    }
+
+    setHomeMode('updating')
+    resetHomeFeedback()
+
+    if (targetPost.likedByMe) {
+      const { error } = await client
+        .from('post_likes')
+        .delete()
+        .eq('post_id', postId)
+        .eq('person_id', currentPersonId)
+
+      setHomeMode('idle')
+
+      if (error) {
+        setHomeError(error.message)
+        return
+      }
+
+      setFeedPosts((current) =>
+        current.map((post) =>
+          post.id === postId
+            ? { ...post, likedByMe: false, likeCount: Math.max(0, post.likeCount - 1) }
+            : post
+        )
+      )
+      return
+    }
+
+    const { error } = await client.from('post_likes').insert({
+      post_id: postId,
+      person_id: currentPersonId,
+    })
+
+    setHomeMode('idle')
+
+    if (error) {
+      setHomeError(error.message)
+      return
+    }
+
+    setFeedPosts((current) =>
+      current.map((post) =>
+        post.id === postId ? { ...post, likedByMe: true, likeCount: post.likeCount + 1 } : post
+      )
+    )
+  }
+
+  const handleAddComment = async (postId: string) => {
+    const content = (commentDrafts[postId] ?? '').trim()
+
+    if (!currentPersonId) {
+      setHomeError('An active profile is required to comment.')
+      return
+    }
+
+    if (content === '') {
+      setHomeError('Enter a comment before posting.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setHomeError('Supabase is not configured. Comments require a live client.')
+      return
+    }
+
+    setHomeMode('updating')
+    resetHomeFeedback()
+
+    const { error } = await client.from('post_comments').insert({
+      post_id: postId,
+      person_id: currentPersonId,
+      content,
+    })
+
+    setHomeMode('idle')
+
+    if (error) {
+      setHomeError(error.message)
+      return
+    }
+
+    setFeedPosts((current) =>
+      current.map((post) =>
+        post.id === postId ? { ...post, commentCount: post.commentCount + 1 } : post
+      )
+    )
+    setCommentDrafts((current) => ({ ...current, [postId]: '' }))
+  }
+
+  const handleAddRelationship = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedTreePerson || !currentFamilyId) {
+      setTreeError('Select a person in the tree before adding a relationship.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setTreeError('Supabase is not configured. Tree updates require a live client.')
+      return
+    }
+
+    let targetPersonId = addRelationshipForm.existingPersonId
+
+    if (addRelationshipForm.useExisting) {
+      if (!targetPersonId) {
+        setTreeError('Choose an existing person to connect.')
+        return
+      }
+    } else {
+      if (addRelationshipForm.firstName.trim() === '' || addRelationshipForm.lastName.trim() === '') {
+        setTreeError('New people require at least a first and last name.')
+        return
+      }
+    }
+
+    setTreeMode('saving')
+    resetTreeFeedback()
+
+    const {
+      data: { user },
+      error: userError,
+    } = await client.auth.getUser()
+
+    if (userError || !user) {
+      setTreeMode('idle')
+      setTreeError(userError?.message ?? 'No authenticated user was found for tree updates.')
+      return
+    }
+
+    if (!addRelationshipForm.useExisting) {
+      const duplicatePerson = treePeople.find(
+        (person) =>
+          person.id !== selectedTreePerson.id &&
+          isSamePersonName(
+            person,
+            addRelationshipForm.firstName.trim(),
+            addRelationshipForm.lastName.trim()
+          )
+      )
+
+      if (duplicatePerson) {
+        setTreeMode('idle')
+        setTreeError(
+          `Possible duplicate found: ${duplicatePerson.first_name} ${duplicatePerson.last_name}. Reuse the existing person instead.`
+        )
+        setAddRelationshipForm((current) => ({
+          ...current,
+          useExisting: true,
+          existingPersonId: duplicatePerson.id,
+        }))
+        return
+      }
+
+      const { data: newPerson, error: newPersonError } = await client
+        .from('people')
+        .insert({
+          family_id: currentFamilyId,
+          created_by: user.id,
+          first_name: addRelationshipForm.firstName.trim(),
+          last_name: addRelationshipForm.lastName.trim(),
+          gender: addRelationshipForm.gender.trim() || null,
+          birth_date: addRelationshipForm.birthDate || null,
+        })
+        .select('id, first_name, last_name, gender, birth_date, city, state, business_name')
+        .single()
+
+      if (newPersonError) {
+        setTreeMode('idle')
+        setTreeError(newPersonError.message)
+        return
+      }
+
+      targetPersonId = newPerson.id
+      setTreePeople((current) => [...current, newPerson as TreePersonItem])
+    }
+
+    let relationshipInsert: {
+      person_a_id: string
+      person_b_id: string
+      relationship_type: string
+    }
+
+    switch (addRelationshipForm.relationshipType) {
+      case 'child':
+        relationshipInsert = {
+          person_a_id: selectedTreePerson.id,
+          person_b_id: targetPersonId,
+          relationship_type: 'parent',
+        }
+        break
+      case 'parent':
+      case 'step_parent':
+      case 'adopted_parent':
+        relationshipInsert = {
+          person_a_id: targetPersonId,
+          person_b_id: selectedTreePerson.id,
+          relationship_type: addRelationshipForm.relationshipType,
+        }
+        break
+      case 'spouse':
+      case 'sibling':
+        relationshipInsert = {
+          person_a_id: selectedTreePerson.id,
+          person_b_id: targetPersonId,
+          relationship_type: addRelationshipForm.relationshipType,
+        }
+        break
+      default:
+        relationshipInsert = {
+          person_a_id: selectedTreePerson.id,
+          person_b_id: targetPersonId,
+          relationship_type: 'sibling',
+        }
+    }
+
+    const { data: newRelationship, error: relationshipError } = await client
+      .from('relationships')
+      .insert({
+        family_id: currentFamilyId,
+        created_by: user.id,
+        person_a_id: relationshipInsert.person_a_id,
+        person_b_id: relationshipInsert.person_b_id,
+        relationship_type: relationshipInsert.relationship_type,
+        locked: true,
+      })
+      .select('id, person_a_id, person_b_id, relationship_type, locked')
+      .single()
+
+    setTreeMode('idle')
+
+    if (relationshipError) {
+      setTreeError(relationshipError.message)
+      return
+    }
+
+    setTreeRelationships((current) => [...current, newRelationship as TreeRelationshipItem])
+    setShowAddRelationship(false)
+    setAddRelationshipForm({
+      relationshipType: 'parent',
+      existingPersonId: '',
+      useExisting: true,
+      firstName: '',
+      lastName: '',
+      gender: '',
+      birthDate: '',
+    })
+  }
+
+  const handleFitTreeBranch = () => {
+    if (!treeFlowInstance || selectedTreeGraph.nodes.length === 0) {
+      return
+    }
+
+    treeFlowInstance.fitView({
+      duration: 350,
+      padding: 0.2,
+    })
+  }
+
+  const toggleTreeSection = (section: keyof TreeCollapseState) => {
+    setCollapsedTreeSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }))
+  }
+
+  const handleZoomToSelectedTreeNode = () => {
+    if (!treeFlowInstance || !selectedTreePerson) {
+      return
+    }
+
+    const selectedNode = selectedTreeGraph.nodes.find((node) => node.id === selectedTreePerson.id)
+
+    if (!selectedNode) {
+      return
+    }
+
+    treeFlowInstance.setCenter(selectedNode.position.x + 95, selectedNode.position.y + 55, {
+      zoom: 1.15,
+      duration: 350,
+    })
   }
 
   const renderLanding = () => (
@@ -2543,7 +3747,465 @@ function App() {
               ))}
             </nav>
             <div className="workspace-content">
-              {workspaceView === 'messages' ? (
+              {workspaceView === 'home' ? (
+                <section className="workspace-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Family Hub</p>
+                      <h2>Live family home</h2>
+                      <p className="panel-copy">
+                        The Home tab now loads real family-scoped feed data, highlights, and posting actions.
+                      </p>
+                    </div>
+                  </div>
+                  {homeError ? (
+                    <div className="error-callout" role="alert">
+                      <strong>Home error</strong>
+                      <p>{homeError}</p>
+                    </div>
+                  ) : null}
+                  <div className="quick-actions">
+                    {['View Tree', 'Find Connection', 'Invite Family', 'Add Member', 'Businesses', 'Map'].map(
+                      (action) => (
+                        <button className="action-tile" key={action} type="button">
+                          {action}
+                        </button>
+                      )
+                    )}
+                  </div>
+                  <div className="dashboard-grid">
+                    <div className="card highlight-card">
+                      <p className="eyebrow">Highlights</p>
+                      <ul className="stack-list">
+                        <li>Upcoming birthdays in 30 days: {upcomingBirthdaysCount}</li>
+                        <li>New members in 7 days: {newMembersCount}</li>
+                        <li>Recent posts: {feedPosts.length}</li>
+                      </ul>
+                    </div>
+                    <form className="card form-card" onSubmit={(event) => void handleCreatePost(event)}>
+                      <p className="eyebrow">Post Composer</p>
+                      <label>
+                        Message
+                        <textarea
+                          className="text-input text-area"
+                          onChange={(event) =>
+                            setPostDraft((current) => ({ ...current, content: event.target.value }))
+                          }
+                          rows={4}
+                          value={postDraft.content}
+                        />
+                      </label>
+                      <label>
+                        Optional media URL
+                        <input
+                          className="text-input"
+                          onChange={(event) =>
+                            setPostDraft((current) => ({ ...current, mediaUrl: event.target.value }))
+                          }
+                          type="url"
+                          value={postDraft.mediaUrl}
+                        />
+                      </label>
+                      <button className="primary-button wide-button" disabled={homeMode === 'posting'} type="submit">
+                        {homeMode === 'posting' ? 'Posting...' : 'Share post'}
+                      </button>
+                    </form>
+                  </div>
+                  <div className="card">
+                    <p className="eyebrow">Feed</p>
+                    {homeMode === 'loading' ? <p className="muted-text">Loading family feed...</p> : null}
+                    <div className="feed-list">
+                      {feedPosts.length > 0 ? (
+                        feedPosts.map((post) => (
+                          <article className="feed-post-card" key={post.id}>
+                            <div className="feed-post">
+                              <div className="avatar-badge">{post.authorName.slice(0, 1).toUpperCase()}</div>
+                              <div>
+                                <div className="feed-meta">
+                                  <strong>{post.authorName}</strong>
+                                  <span>{new Date(post.createdAt).toLocaleString()}</span>
+                                </div>
+                                <p>{post.content || 'Media-only post'}</p>
+                                {post.mediaUrl ? (
+                                  <a href={post.mediaUrl} rel="noreferrer" target="_blank">
+                                    {post.mediaUrl}
+                                  </a>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="banner-actions">
+                              <button
+                                className="secondary-button"
+                                disabled={homeMode === 'updating'}
+                                onClick={() => void handleTogglePostLike(post.id)}
+                                type="button"
+                              >
+                                {post.likedByMe ? 'Unlike' : 'Like'} ({post.likeCount})
+                              </button>
+                              <span className="muted-text">Comments: {post.commentCount}</span>
+                            </div>
+                            <div className="comment-row">
+                              <input
+                                className="text-input"
+                                onChange={(event) =>
+                                  setCommentDrafts((current) => ({
+                                    ...current,
+                                    [post.id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="Write a comment"
+                                type="text"
+                                value={commentDrafts[post.id] ?? ''}
+                              />
+                              <button
+                                className="secondary-button"
+                                disabled={homeMode === 'updating'}
+                                onClick={() => void handleAddComment(post.id)}
+                                type="button"
+                              >
+                                Comment
+                              </button>
+                            </div>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="muted-text">No posts yet. Share the first update for your family.</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              ) : workspaceView === 'tree' ? (
+                <section className="workspace-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Interactive Tree</p>
+                      <h2>Family graph view</h2>
+                      <p className="panel-copy">
+                        The tree is now backed by real `people` and `relationships` data with a selected root,
+                        branch filtering, and relationship creation.
+                      </p>
+                    </div>
+                  </div>
+                  {treeError ? (
+                    <div className="error-callout" role="alert">
+                      <strong>Tree error</strong>
+                      <p>{treeError}</p>
+                    </div>
+                  ) : null}
+                  <div className="tree-toolbar">
+                    <label>
+                      <span className="eyebrow">Viewing from</span>
+                      <select
+                        className="text-input"
+                        onChange={(event) => {
+                          setTreeRootId(event.target.value)
+                          setSelectedTreePersonId(event.target.value)
+                        }}
+                        value={treeRootId}
+                      >
+                        {treePeople.map((person) => (
+                          <option key={person.id} value={person.id}>
+                            {`${person.first_name} ${person.last_name}`.trim()}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span className="eyebrow">Branch</span>
+                      <select
+                        className="text-input"
+                        onChange={(event) =>
+                          setTreeBranchFilter(event.target.value as 'both' | 'maternal' | 'paternal')
+                        }
+                        value={treeBranchFilter}
+                      >
+                        <option value="both">Both</option>
+                        <option value="maternal">Maternal</option>
+                        <option value="paternal">Paternal</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span className="eyebrow">Search</span>
+                      <input
+                        className="text-input"
+                        onChange={(event) => setTreeSearch(event.target.value)}
+                        placeholder="Find a person"
+                        type="text"
+                        value={treeSearch}
+                      />
+                    </label>
+                  </div>
+                  <div className="tree-layout">
+                    <div className="tree-canvas real-tree-canvas">
+                      {treeMode === 'loading' ? <p className="muted-text">Loading family tree...</p> : null}
+                      {rootTreePerson ? (
+                        <>
+                          <div className="tree-canvas-actions">
+                            <button className="secondary-button" onClick={handleZoomToSelectedTreeNode} type="button">
+                              Zoom to Selected
+                            </button>
+                            <button className="secondary-button" onClick={handleFitTreeBranch} type="button">
+                              Fit Branch
+                            </button>
+                          </div>
+                          <div className="tree-collapse-actions">
+                            <button
+                              className="ghost-button"
+                              onClick={() => toggleTreeSection('ancestors')}
+                              type="button"
+                            >
+                              {collapsedTreeSections.ancestors ? 'Expand' : 'Collapse'} Ancestors ({treeSectionCounts.ancestors})
+                            </button>
+                            <button
+                              className="ghost-button"
+                              onClick={() => toggleTreeSection('descendants')}
+                              type="button"
+                            >
+                              {collapsedTreeSections.descendants ? 'Expand' : 'Collapse'} Descendants ({treeSectionCounts.descendants})
+                            </button>
+                            <button
+                              className="ghost-button"
+                              onClick={() => toggleTreeSection('siblings')}
+                              type="button"
+                            >
+                              {collapsedTreeSections.siblings ? 'Expand' : 'Collapse'} Siblings ({treeSectionCounts.siblings})
+                            </button>
+                            <button
+                              className="ghost-button"
+                              onClick={() => toggleTreeSection('spouses')}
+                              type="button"
+                            >
+                              {collapsedTreeSections.spouses ? 'Expand' : 'Collapse'} Spouses ({treeSectionCounts.spouses})
+                            </button>
+                          </div>
+                          <div className="tree-flow-shell">
+                            <ReactFlow
+                              edges={selectedTreeGraph.edges}
+                              fitView
+                              fitViewOptions={{ padding: 0.2 }}
+                              nodes={selectedTreeGraph.nodes}
+                              nodesDraggable={false}
+                              nodesFocusable
+                              onInit={setTreeFlowInstance}
+                              onNodeClick={(_, node) => {
+                                const nodeId = String(node.id)
+
+                                if (nodeId.startsWith('family-group-') || nodeId.startsWith('sibling-group-')) {
+                                  return
+                                }
+
+                                setSelectedTreePersonId(nodeId)
+                              }}
+                              proOptions={{ hideAttribution: true }}
+                              zoomOnScroll={false}
+                            >
+                              <Background gap={24} size={1} />
+                              <Controls showInteractive={false} />
+                            </ReactFlow>
+                          </div>
+                          <div className="card tree-legend">
+                            <p className="eyebrow">Graph Layout</p>
+                            <p className="muted-text">
+                              Dagre now spaces the branch automatically, couples share a family connector before
+                              children branch downward, and dense generations can be collapsed or expanded on demand.
+                            </p>
+                          </div>
+                          <div className="card">
+                            <p className="eyebrow">Search Results</p>
+                            <div className="tree-search-results">
+                              {searchedTreePeople.slice(0, 10).map((person) => (
+                                <button
+                                  className="chip"
+                                  key={person.id}
+                                  onClick={() => setSelectedTreePersonId(person.id)}
+                                  type="button"
+                                >
+                                  {`${person.first_name} ${person.last_name}`.trim()}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <p className="muted-text">No people are available to render in this family tree yet.</p>
+                      )}
+                    </div>
+                    <aside className="card side-panel">
+                      {selectedTreePerson ? (
+                        <>
+                          <p className="eyebrow">Selected Node</p>
+                          <h3>{`${selectedTreePerson.first_name} ${selectedTreePerson.last_name}`.trim()}</h3>
+                          <p className="muted-text">
+                            {[selectedTreePerson.city, selectedTreePerson.state].filter(Boolean).join(', ') ||
+                              'Location not set'}
+                          </p>
+                          <div className="side-actions">
+                            <button
+                              className="secondary-button"
+                              onClick={() => {
+                                setTreeRootId(selectedTreePerson.id)
+                                setWorkspaceView('tree')
+                              }}
+                              type="button"
+                            >
+                              Set as Root
+                            </button>
+                            <button
+                              className="secondary-button"
+                              onClick={() => {
+                                setCurrentPersonId(selectedTreePerson.id)
+                                setCurrentPersonName(
+                                  `${selectedTreePerson.first_name} ${selectedTreePerson.last_name}`.trim()
+                                )
+                                setWorkspaceView('profile')
+                              }}
+                              type="button"
+                            >
+                              View Profile
+                            </button>
+                            <button
+                              className="secondary-button"
+                              onClick={() => {
+                                setShowAddRelationship((current) => !current)
+                                resetTreeFeedback()
+                              }}
+                              type="button"
+                            >
+                              {showAddRelationship ? 'Close Form' : 'Add Relationship'}
+                            </button>
+                          </div>
+                          {showAddRelationship ? (
+                            <form className="form-card" onSubmit={(event) => void handleAddRelationship(event)}>
+                              <label>
+                                Relationship type
+                                <select
+                                  className="text-input"
+                                  onChange={(event) =>
+                                    setAddRelationshipForm((current) => ({
+                                      ...current,
+                                      relationshipType: event.target.value,
+                                    }))
+                                  }
+                                  value={addRelationshipForm.relationshipType}
+                                >
+                                  <option value="parent">Add Parent</option>
+                                  <option value="child">Add Child</option>
+                                  <option value="spouse">Add Spouse</option>
+                                  <option value="sibling">Add Sibling</option>
+                                  <option value="step_parent">Add Step Parent</option>
+                                  <option value="adopted_parent">Add Adopted Parent</option>
+                                </select>
+                              </label>
+                              <label className="checkbox-row">
+                                <input
+                                  checked={addRelationshipForm.useExisting}
+                                  onChange={(event) =>
+                                    setAddRelationshipForm((current) => ({
+                                      ...current,
+                                      useExisting: event.target.checked,
+                                      existingPersonId: '',
+                                    }))
+                                  }
+                                  type="checkbox"
+                                />
+                                <span>Use existing person</span>
+                              </label>
+                              {addRelationshipForm.useExisting ? (
+                                <label>
+                                  Existing person
+                                  <select
+                                    className="text-input"
+                                    onChange={(event) =>
+                                      setAddRelationshipForm((current) => ({
+                                        ...current,
+                                        existingPersonId: event.target.value,
+                                      }))
+                                    }
+                                    value={addRelationshipForm.existingPersonId}
+                                  >
+                                    <option value="">Select a person</option>
+                                    {treePeople
+                                      .filter((person) => person.id !== selectedTreePerson.id)
+                                      .map((person) => (
+                                        <option key={person.id} value={person.id}>
+                                          {`${person.first_name} ${person.last_name}`.trim()}
+                                        </option>
+                                      ))}
+                                  </select>
+                                </label>
+                              ) : (
+                                <>
+                                  <label>
+                                    First name
+                                    <input
+                                      className="text-input"
+                                      onChange={(event) =>
+                                        setAddRelationshipForm((current) => ({
+                                          ...current,
+                                          firstName: event.target.value,
+                                        }))
+                                      }
+                                      type="text"
+                                      value={addRelationshipForm.firstName}
+                                    />
+                                  </label>
+                                  <label>
+                                    Last name
+                                    <input
+                                      className="text-input"
+                                      onChange={(event) =>
+                                        setAddRelationshipForm((current) => ({
+                                          ...current,
+                                          lastName: event.target.value,
+                                        }))
+                                      }
+                                      type="text"
+                                      value={addRelationshipForm.lastName}
+                                    />
+                                  </label>
+                                  <label>
+                                    Gender
+                                    <input
+                                      className="text-input"
+                                      onChange={(event) =>
+                                        setAddRelationshipForm((current) => ({
+                                          ...current,
+                                          gender: event.target.value,
+                                        }))
+                                      }
+                                      type="text"
+                                      value={addRelationshipForm.gender}
+                                    />
+                                  </label>
+                                  <label>
+                                    Birth date
+                                    <input
+                                      className="text-input"
+                                      onChange={(event) =>
+                                        setAddRelationshipForm((current) => ({
+                                          ...current,
+                                          birthDate: event.target.value,
+                                        }))
+                                      }
+                                      type="date"
+                                      value={addRelationshipForm.birthDate}
+                                    />
+                                  </label>
+                                </>
+                              )}
+                              <button className="primary-button wide-button" disabled={treeMode === 'saving'} type="submit">
+                                {treeMode === 'saving' ? 'Saving...' : 'Save relationship'}
+                              </button>
+                            </form>
+                          ) : null}
+                        </>
+                      ) : (
+                        <p className="muted-text">Select a node to inspect it.</p>
+                      )}
+                    </aside>
+                  </div>
+                </section>
+              ) : workspaceView === 'messages' ? (
                 <section className="workspace-panel">
                   <div className="panel-header">
                     <div>
@@ -2613,6 +4275,9 @@ function App() {
                               <strong>{conversation.title}</strong>
                               <p>{conversation.preview}</p>
                             </div>
+                            {conversation.unreadCount > 0 ? (
+                              <span className="unread-pill">{conversation.unreadCount}</span>
+                            ) : null}
                           </button>
                         ))}
                       </div>
@@ -3252,11 +4917,10 @@ function App() {
                 <section className="workspace-panel">
                   <div className="panel-header">
                     <div>
-                      <p className="eyebrow">{workspaceView}</p>
-                      <h2>{workspaceView[0].toUpperCase() + workspaceView.slice(1)} module scaffold</h2>
+                      <p className="eyebrow">Module</p>
+                      <h2>Module scaffold</h2>
                       <p className="panel-copy">
-                        This panel is the next implementation surface for the real `{workspaceView}`
-                        feature.
+                        This panel is the next implementation surface for the next feature slice.
                       </p>
                     </div>
                   </div>
