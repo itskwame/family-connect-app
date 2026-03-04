@@ -3069,6 +3069,17 @@ function App() {
       return
     }
 
+    if (!response.data.session) {
+      if (mode === 'signup') {
+        setStatus('Signup succeeded. Check your email to confirm your account, then log in.')
+        setRoute('login')
+        return
+      }
+
+      setAuthError('No active auth session found. Please log in again.')
+      return
+    }
+
     setStatus(
       mode === 'signup'
         ? 'Supabase signup succeeded. Next: create a family or join with an invite.'
