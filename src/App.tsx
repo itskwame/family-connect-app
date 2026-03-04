@@ -1,15 +1,24 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import dagre from 'dagre'
-import ReactFlow, { Background, Controls, MarkerType, Position } from 'reactflow'
-import type { Edge as FlowEdge, Node as FlowNode } from 'reactflow'
-import type { ReactFlowInstance } from 'reactflow'
-import 'reactflow/dist/style.css'
+import type { Edge as FlowEdge, Node as FlowNode, ReactFlowInstance } from 'reactflow'
 import './App.css'
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabase'
 
+const TreeCanvas = lazy(() => import('./views/TreeCanvas'))
+const PathfinderWorkspace = lazy(() => import('./views/PathfinderWorkspace'))
+const MapWorkspace = lazy(() => import('./views/MapWorkspace'))
+
 type Route = 'landing' | 'signup' | 'login' | 'family' | 'onboarding' | 'workspace'
-type WorkspaceView = 'home' | 'tree' | 'messages' | 'profile' | 'businesses'
+type WorkspaceView =
+  | 'home'
+  | 'tree'
+  | 'pathfinder'
+  | 'businesses'
+  | 'map'
+  | 'messages'
+  | 'profile'
+  | 'export'
 type CandidateProfile = {
   id: string
   first_name: string
@@ -101,6 +110,17 @@ type BusinessDirectoryItem = {
   businessState: string | null
   businessWebsite: string | null
 }
+type FamilyMapCluster = {
+  id: string
+  label: string
+  city: string | null
+  state: string | null
+  zip: string | null
+  count: number
+  peopleNames: string[]
+  latitude: number
+  longitude: number
+}
 type TreePersonItem = {
   id: string
   first_name: string
@@ -128,8 +148,29 @@ type TreeCollapseState = {
   siblings: boolean
   spouses: boolean
 }
+type PathfinderStep = {
+  fromId: string
+  toId: string
+  relationLabel: string
+}
+type PathfinderResult = {
+  personAId: string
+  personBId: string
+  summary: string
+  pathPersonIds: string[]
+  steps: PathfinderStep[]
+}
 
-const workspaceViews: WorkspaceView[] = ['home', 'tree', 'messages', 'profile', 'businesses']
+const workspaceViews: WorkspaceView[] = [
+  'home',
+  'tree',
+  'pathfinder',
+  'businesses',
+  'map',
+  'messages',
+  'profile',
+  'export',
+]
 const FAMILY_ID_STORAGE_KEY = 'family-connect.current-family-id'
 const FAMILY_NAME_STORAGE_KEY = 'family-connect.current-family-name'
 const PERSON_ID_STORAGE_KEY = 'family-connect.current-person-id'
@@ -196,6 +237,15 @@ function isParentRelationshipType(value: string) {
   return value === 'parent' || value === 'step_parent' || value === 'adopted_parent'
 }
 
+function escapeSvgText(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function isSamePersonName(
   person: Pick<TreePersonItem, 'first_name' | 'last_name'>,
   firstName: string,
@@ -205,6 +255,158 @@ function isSamePersonName(
     normalizeName(person.first_name) === normalizeName(firstName) &&
     normalizeName(person.last_name) === normalizeName(lastName)
   )
+}
+
+function buildPathfinderSummary(
+  personAName: string,
+  personBName: string,
+  relationLabels: string[]
+) {
+  if (relationLabels.length === 0) {
+    return `${personAName} and ${personBName} are the same person.`
+  }
+
+  if (relationLabels.length === 1) {
+    const [label] = relationLabels
+
+    switch (label) {
+      case 'parent':
+        return `${personBName} is ${personAName}'s parent.`
+      case 'step parent':
+        return `${personBName} is ${personAName}'s step parent.`
+      case 'adoptive parent':
+        return `${personBName} is ${personAName}'s adoptive parent.`
+      case 'child':
+        return `${personBName} is ${personAName}'s child.`
+      case 'spouse':
+        return `${personBName} is ${personAName}'s spouse.`
+      case 'sibling':
+        return `${personBName} is ${personAName}'s sibling.`
+      default:
+        return `${personAName} is connected to ${personBName} through ${label}.`
+    }
+  }
+
+  if (relationLabels.length === 2) {
+    const pathKey = relationLabels.join('>')
+
+    switch (pathKey) {
+      case 'parent>parent':
+        return `${personBName} is ${personAName}'s grandparent.`
+      case 'child>child':
+        return `${personBName} is ${personAName}'s grandchild.`
+      case 'parent>sibling':
+        return `${personBName} is ${personAName}'s aunt or uncle.`
+      case 'sibling>child':
+        return `${personBName} is ${personAName}'s niece or nephew.`
+      case 'spouse>parent':
+        return `${personBName} is ${personAName}'s parent-in-law.`
+      default:
+        return `${personAName} is connected to ${personBName} through ${relationLabels.length} steps.`
+    }
+  }
+
+  return `${personAName} is connected to ${personBName} through ${relationLabels.length} relationships.`
+}
+
+const STATE_MAP_CENTERS: Record<string, [number, number]> = {
+  AL: [32.8067, -86.7911],
+  AK: [61.3707, -152.4044],
+  AZ: [33.7298, -111.4312],
+  AR: [34.9697, -92.3731],
+  CA: [36.1162, -119.6816],
+  CO: [39.0598, -105.3111],
+  CT: [41.5978, -72.7554],
+  DE: [39.3185, -75.5071],
+  FL: [27.7663, -81.6868],
+  GA: [33.0406, -83.6431],
+  HI: [21.0943, -157.4983],
+  ID: [44.2405, -114.4788],
+  IL: [40.3495, -88.9861],
+  IN: [39.8494, -86.2583],
+  IA: [42.0115, -93.2105],
+  KS: [38.5266, -96.7265],
+  KY: [37.6681, -84.6701],
+  LA: [31.1695, -91.8678],
+  ME: [44.6939, -69.3819],
+  MD: [39.0639, -76.8021],
+  MA: [42.2302, -71.5301],
+  MI: [43.3266, -84.5361],
+  MN: [45.6945, -93.9002],
+  MS: [32.7416, -89.6787],
+  MO: [38.4561, -92.2884],
+  MT: [46.9219, -110.4544],
+  NE: [41.1254, -98.2681],
+  NV: [38.3135, -117.0554],
+  NH: [43.4525, -71.5639],
+  NJ: [40.2989, -74.521],
+  NM: [34.8405, -106.2485],
+  NY: [42.1657, -74.9481],
+  NC: [35.6301, -79.8064],
+  ND: [47.5289, -99.784],
+  OH: [40.3888, -82.7649],
+  OK: [35.5653, -96.9289],
+  OR: [44.572, -122.0709],
+  PA: [40.5908, -77.2098],
+  RI: [41.6809, -71.5118],
+  SC: [33.8569, -80.945],
+  SD: [44.2998, -99.4388],
+  TN: [35.7478, -86.6923],
+  TX: [31.0545, -97.5635],
+  UT: [40.1500, -111.8624],
+  VT: [44.0459, -72.7107],
+  VA: [37.7693, -78.17],
+  WA: [47.4009, -121.4905],
+  WV: [38.4912, -80.9545],
+  WI: [44.2685, -89.6165],
+  WY: [42.756, -107.3025],
+  DC: [38.9072, -77.0369],
+}
+
+const EXPORT_TEMPLATES = [
+  { id: 'heritage', name: 'Heritage', fill: '#ffffff', stroke: '#1f2a44', accent: '#2fb8a3' },
+  { id: 'linen', name: 'Linen', fill: '#faf7f0', stroke: '#6b7280', accent: '#1f2a44' },
+  { id: 'legacy', name: 'Legacy', fill: '#f8fafc', stroke: '#0f172a', accent: '#f4b942' },
+  { id: 'teal', name: 'Teal', fill: '#f0fdfa', stroke: '#115e59', accent: '#14b8a6' },
+  { id: 'navy', name: 'Navy', fill: '#eef2ff', stroke: '#1e3a8a', accent: '#60a5fa' },
+  { id: 'sage', name: 'Sage', fill: '#f0fdf4', stroke: '#166534', accent: '#86efac' },
+  { id: 'ember', name: 'Ember', fill: '#fff7ed', stroke: '#9a3412', accent: '#fb923c' },
+  { id: 'plum', name: 'Plum', fill: '#faf5ff', stroke: '#6b21a8', accent: '#c084fc' },
+  { id: 'slate', name: 'Slate', fill: '#f8fafc', stroke: '#334155', accent: '#94a3b8' },
+  { id: 'midnight', name: 'Midnight', fill: '#e2e8f0', stroke: '#020617', accent: '#0ea5e9' },
+] as const
+
+const EXPORT_PRESET_LABELS = {
+  immediate_family: 'Immediate Family',
+  ancestor_fan: 'Ancestor Fan',
+  descendant_poster: 'Descendant Poster',
+  maternal_line: 'Maternal Line',
+  paternal_line: 'Paternal Line',
+  one_page_letter: 'One-Page Letter',
+} as const
+
+function hashLocationKey(value: string) {
+  let hash = 0
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash << 5) - hash + value.charCodeAt(index)
+    hash |= 0
+  }
+
+  return Math.abs(hash)
+}
+
+function estimateLocationCoordinates(city: string | null, state: string | null, zip: string | null) {
+  const normalizedState = (state ?? '').trim().toUpperCase()
+  const base = STATE_MAP_CENTERS[normalizedState] ?? [39.8283, -98.5795]
+  const hashSeed = hashLocationKey(`${city ?? ''}|${state ?? ''}|${zip ?? ''}`)
+  const latOffset = ((hashSeed % 900) / 1000 - 0.45) * 2.2
+  const lngOffset = (((Math.floor(hashSeed / 1000) % 900) / 1000) - 0.45) * 2.8
+
+  return {
+    latitude: Math.max(Math.min(base[0] + latOffset, 71), 18),
+    longitude: Math.max(Math.min(base[1] + lngOffset, -66), -168),
+  }
 }
 
 function buildProfileForm(record: ProfileRecord) {
@@ -272,10 +474,22 @@ function App() {
   const [businessStateFilter, setBusinessStateFilter] = useState('All')
   const [selectedBusinessId, setSelectedBusinessId] = useState('')
   const [businessDirectoryItems, setBusinessDirectoryItems] = useState<BusinessDirectoryItem[]>([])
+  const [mapMode, setMapMode] = useState<'idle' | 'loading'>('idle')
+  const [mapError, setMapError] = useState('')
+  const [familyMapClusters, setFamilyMapClusters] = useState<FamilyMapCluster[]>([])
+  const [selectedMapClusterId, setSelectedMapClusterId] = useState('')
   const [treeMode, setTreeMode] = useState<'idle' | 'loading' | 'saving'>('idle')
   const [treeError, setTreeError] = useState('')
   const [treePeople, setTreePeople] = useState<TreePersonItem[]>([])
   const [treeRelationships, setTreeRelationships] = useState<TreeRelationshipItem[]>([])
+  const [pathfinderMode, setPathfinderMode] = useState<'idle' | 'searching'>('idle')
+  const [pathfinderError, setPathfinderError] = useState('')
+  const [pathfinderPersonAId, setPathfinderPersonAId] = useState('')
+  const [pathfinderPersonBQuery, setPathfinderPersonBQuery] = useState('')
+  const [debouncedPathfinderQuery, setDebouncedPathfinderQuery] = useState('')
+  const [pathfinderPersonBId, setPathfinderPersonBId] = useState('')
+  const [pathfinderResult, setPathfinderResult] = useState<PathfinderResult | null>(null)
+  const [highlightedTreePath, setHighlightedTreePath] = useState<PathfinderResult | null>(null)
   const [treeRootId, setTreeRootId] = useState('')
   const [selectedTreePersonId, setSelectedTreePersonId] = useState('')
   const [treeSearch, setTreeSearch] = useState('')
@@ -321,6 +535,26 @@ function App() {
     mediaUrl: '',
     caption: '',
   })
+  const [exportMode, setExportMode] = useState<'idle' | 'exporting'>('idle')
+  const [exportError, setExportError] = useState('')
+  const [exportRootId, setExportRootId] = useState('')
+  const [exportDirection, setExportDirection] = useState<'ancestors' | 'descendants' | 'both'>('both')
+  const [exportBranch, setExportBranch] = useState<'both' | 'maternal' | 'paternal'>('both')
+  const [exportGenerations, setExportGenerations] = useState(3)
+  const [exportIncludeSpouses, setExportIncludeSpouses] = useState(true)
+  const [exportIncludeSiblings, setExportIncludeSiblings] = useState(false)
+  const [exportIncludeParentsOfSiblings, setExportIncludeParentsOfSiblings] = useState(false)
+  const [exportIncludeSiblingSpouses, setExportIncludeSiblingSpouses] = useState(false)
+  const [exportIncludeChildrenOfSiblings, setExportIncludeChildrenOfSiblings] = useState(false)
+  const [exportDetailLevel, setExportDetailLevel] = useState<'minimal' | 'standard' | 'full'>('standard')
+  const [exportTemplateId, setExportTemplateId] = useState<(typeof EXPORT_TEMPLATES)[number]['id']>(
+    'heritage'
+  )
+  const [exportFormat, setExportFormat] = useState<'letter' | 'poster'>('letter')
+  const [exportPosterSize, setExportPosterSize] = useState<'dynamic' | '18x24' | '24x36' | '36x48'>(
+    'dynamic'
+  )
+  const [lastExportPresetId, setLastExportPresetId] = useState<keyof typeof EXPORT_PRESET_LABELS | null>(null)
   const [profileForm, setProfileForm] = useState({
     firstName: '',
     lastName: '',
@@ -945,6 +1179,56 @@ function App() {
     )
   }, [treePeople, treeSearch])
 
+  const pathfinderSearchResults = useMemo(() => {
+    const normalized = debouncedPathfinderQuery.trim().toLowerCase()
+
+    if (normalized === '') {
+      return []
+    }
+
+    return treePeople
+      .filter(
+        (person) =>
+          person.id !== pathfinderPersonAId &&
+          `${person.first_name} ${person.last_name}`.trim().toLowerCase().includes(normalized)
+      )
+      .slice(0, 10)
+  }, [debouncedPathfinderQuery, pathfinderPersonAId, treePeople])
+
+  const relationshipAdjacency = useMemo(() => {
+    const adjacency = new Map<
+      string,
+      Array<{ personId: string; relationLabel: string }>
+    >()
+
+    const addNeighbor = (fromId: string, toId: string, relationLabel: string) => {
+      if (!adjacency.has(fromId)) {
+        adjacency.set(fromId, [])
+      }
+
+      adjacency.get(fromId)?.push({ personId: toId, relationLabel })
+    }
+
+    for (const relationship of treeRelationships) {
+      if (relationship.relationship_type === 'parent') {
+        addNeighbor(relationship.person_a_id, relationship.person_b_id, 'child')
+        addNeighbor(relationship.person_b_id, relationship.person_a_id, 'parent')
+      } else if (relationship.relationship_type === 'step_parent') {
+        addNeighbor(relationship.person_a_id, relationship.person_b_id, 'child')
+        addNeighbor(relationship.person_b_id, relationship.person_a_id, 'step parent')
+      } else if (relationship.relationship_type === 'adopted_parent') {
+        addNeighbor(relationship.person_a_id, relationship.person_b_id, 'child')
+        addNeighbor(relationship.person_b_id, relationship.person_a_id, 'adoptive parent')
+      } else if (relationship.relationship_type === 'spouse' || relationship.relationship_type === 'sibling') {
+        const label = relationship.relationship_type
+        addNeighbor(relationship.person_a_id, relationship.person_b_id, label)
+        addNeighbor(relationship.person_b_id, relationship.person_a_id, label)
+      }
+    }
+
+    return adjacency
+  }, [treeRelationships])
+
   const treeSectionCounts = useMemo(
     () => ({
       ancestors: selectedTreeConnections.parents.length + selectedTreeConnections.grandparents.length,
@@ -955,9 +1239,354 @@ function App() {
     [selectedTreeConnections]
   )
 
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedPathfinderQuery(pathfinderPersonBQuery)
+      setPathfinderMode(pathfinderPersonBQuery.trim() === '' ? 'idle' : 'searching')
+    }, 300)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [pathfinderPersonBQuery])
+
+  useEffect(() => {
+    setPathfinderMode('idle')
+  }, [debouncedPathfinderQuery])
+
+  useEffect(() => {
+    if (treePeople.length === 0) {
+      setPathfinderPersonAId('')
+      setPathfinderPersonBId('')
+      setPathfinderResult(null)
+      setHighlightedTreePath(null)
+      return
+    }
+
+    setPathfinderPersonAId((current) =>
+      current && treePeople.some((person) => person.id === current)
+        ? current
+        : currentPersonId && treePeople.some((person) => person.id === currentPersonId)
+          ? currentPersonId
+          : treePeople[0]?.id ?? ''
+    )
+
+    setPathfinderPersonBId((current) =>
+      current && treePeople.some((person) => person.id === current) ? current : ''
+    )
+  }, [currentPersonId, treePeople])
+
+  useEffect(() => {
+    if (treePeople.length === 0) {
+      setExportRootId('')
+      return
+    }
+
+    setExportRootId((current) =>
+      current && treePeople.some((person) => person.id === current)
+        ? current
+        : currentPersonId && treePeople.some((person) => person.id === currentPersonId)
+          ? currentPersonId
+          : treePeople[0]?.id ?? ''
+      )
+  }, [currentPersonId, treePeople])
+
+  useEffect(() => {
+    if (!exportIncludeSiblings && exportIncludeParentsOfSiblings) {
+      setExportIncludeParentsOfSiblings(false)
+    }
+  }, [exportIncludeParentsOfSiblings, exportIncludeSiblings])
+
+  useEffect(() => {
+    if (!exportIncludeSiblings && exportIncludeSiblingSpouses) {
+      setExportIncludeSiblingSpouses(false)
+    }
+  }, [exportIncludeSiblingSpouses, exportIncludeSiblings])
+
+  useEffect(() => {
+    if (!exportIncludeSiblings && exportIncludeChildrenOfSiblings) {
+      setExportIncludeChildrenOfSiblings(false)
+    }
+  }, [exportIncludeChildrenOfSiblings, exportIncludeSiblings])
+
+  const exportScopeSummary = useMemo(() => {
+    const directionLabel =
+      exportDirection === 'ancestors'
+        ? 'ancestors'
+        : exportDirection === 'descendants'
+          ? 'descendants'
+          : 'ancestors and descendants'
+    const branchLabel =
+      exportBranch === 'both'
+        ? 'both branches'
+        : exportBranch === 'maternal'
+          ? 'the maternal branch'
+          : 'the paternal branch'
+    const extraParts = [
+      exportIncludeSpouses ? 'spouses' : null,
+      exportIncludeSiblings ? 'siblings' : null,
+      exportIncludeParentsOfSiblings ? 'parents of siblings' : null,
+      exportIncludeSiblingSpouses ? "siblings' spouses" : null,
+      exportIncludeChildrenOfSiblings ? 'children of siblings' : null,
+    ].filter(Boolean)
+    const extrasLabel = extraParts.length > 0 ? ` Includes ${extraParts.join(', ')}.` : ''
+
+    return `Exporting ${directionLabel} from the selected root across ${branchLabel}, up to ${exportGenerations} generation${
+      exportGenerations === 1 ? '' : 's'
+    }.${extrasLabel}`
+  }, [
+    exportBranch,
+    exportDirection,
+    exportGenerations,
+    exportIncludeChildrenOfSiblings,
+    exportIncludeParentsOfSiblings,
+    exportIncludeSiblingSpouses,
+    exportIncludeSiblings,
+    exportIncludeSpouses,
+  ])
+
+  const activeExportPresetLabel = useMemo(() => {
+    const matches = (
+      config: {
+        direction: 'ancestors' | 'descendants' | 'both'
+        branch: 'both' | 'maternal' | 'paternal'
+        generations: number
+        includeSpouses: boolean
+        includeSiblings: boolean
+        includeParentsOfSiblings: boolean
+        includeSiblingSpouses: boolean
+        includeChildrenOfSiblings: boolean
+        detailLevel: 'minimal' | 'standard' | 'full'
+        format: 'letter' | 'poster'
+        posterSize: 'dynamic' | '18x24' | '24x36' | '36x48'
+        templateId: (typeof EXPORT_TEMPLATES)[number]['id']
+      }
+    ) =>
+      exportDirection === config.direction &&
+      exportBranch === config.branch &&
+      exportGenerations === config.generations &&
+      exportIncludeSpouses === config.includeSpouses &&
+      exportIncludeSiblings === config.includeSiblings &&
+      exportIncludeParentsOfSiblings === config.includeParentsOfSiblings &&
+      exportIncludeSiblingSpouses === config.includeSiblingSpouses &&
+      exportIncludeChildrenOfSiblings === config.includeChildrenOfSiblings &&
+      exportDetailLevel === config.detailLevel &&
+      exportFormat === config.format &&
+      exportPosterSize === config.posterSize &&
+      exportTemplateId === config.templateId
+
+    if (
+      matches({
+        direction: 'both',
+        branch: 'both',
+        generations: 1,
+        includeSpouses: true,
+        includeSiblings: true,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'standard',
+        format: 'letter',
+        posterSize: 'dynamic',
+        templateId: 'heritage',
+      })
+    ) {
+      return 'Immediate Family'
+    }
+
+    if (
+      matches({
+        direction: 'ancestors',
+        branch: 'both',
+        generations: 4,
+        includeSpouses: false,
+        includeSiblings: false,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'minimal',
+        format: 'poster',
+        posterSize: '24x36',
+        templateId: 'legacy',
+      })
+    ) {
+      return 'Ancestor Fan'
+    }
+
+    if (
+      matches({
+        direction: 'descendants',
+        branch: 'both',
+        generations: 4,
+        includeSpouses: true,
+        includeSiblings: false,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'full',
+        format: 'poster',
+        posterSize: '24x36',
+        templateId: 'linen',
+      })
+    ) {
+      return 'Descendant Poster'
+    }
+
+    if (
+      matches({
+        direction: 'ancestors',
+        branch: 'maternal',
+        generations: 4,
+        includeSpouses: false,
+        includeSiblings: false,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'minimal',
+        format: 'poster',
+        posterSize: '24x36',
+        templateId: 'sage',
+      })
+    ) {
+      return 'Maternal Line'
+    }
+
+    if (
+      matches({
+        direction: 'ancestors',
+        branch: 'paternal',
+        generations: 4,
+        includeSpouses: false,
+        includeSiblings: false,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'minimal',
+        format: 'poster',
+        posterSize: '24x36',
+        templateId: 'navy',
+      })
+    ) {
+      return 'Paternal Line'
+    }
+
+    if (
+      matches({
+        direction: 'both',
+        branch: 'both',
+        generations: 2,
+        includeSpouses: true,
+        includeSiblings: false,
+        includeParentsOfSiblings: false,
+        includeSiblingSpouses: false,
+        includeChildrenOfSiblings: false,
+        detailLevel: 'minimal',
+        format: 'letter',
+        posterSize: 'dynamic',
+        templateId: 'slate',
+      })
+    ) {
+      return 'One-Page Letter'
+    }
+
+    return 'Custom'
+  }, [
+    exportBranch,
+    exportDetailLevel,
+    exportDirection,
+    exportFormat,
+    exportGenerations,
+    exportIncludeChildrenOfSiblings,
+    exportIncludeParentsOfSiblings,
+    exportIncludeSiblingSpouses,
+    exportIncludeSiblings,
+    exportIncludeSpouses,
+    exportPosterSize,
+    exportTemplateId,
+  ])
+
   const selectedTreeGraph = useMemo(() => {
     if (!selectedTreePerson) {
       return { nodes: [] as FlowNode[], edges: [] as FlowEdge[] }
+    }
+
+    if (highlightedTreePath && highlightedTreePath.pathPersonIds.length > 1) {
+      const graph = new dagre.graphlib.Graph()
+      graph.setGraph({
+        rankdir: 'LR',
+        ranksep: 90,
+        nodesep: 36,
+        marginx: 24,
+        marginy: 24,
+      })
+      graph.setDefaultEdgeLabel(() => ({}))
+
+      const pathNodes: FlowNode[] = highlightedTreePath.pathPersonIds
+        .map((personId) => treePeopleLookup.get(personId))
+        .filter((person): person is TreePersonItem => Boolean(person))
+        .map((person) => {
+          const title = `${person.first_name} ${person.last_name}`.trim()
+          const subtitle =
+            [person.city, person.state].filter(Boolean).join(', ') || person.birth_date || 'No details yet'
+
+          graph.setNode(person.id, { width: 190, height: 118 })
+
+          return {
+            id: person.id,
+            position: { x: 0, y: 0 },
+            sourcePosition: 'right' as FlowNode['sourcePosition'],
+            targetPosition: 'left' as FlowNode['targetPosition'],
+            draggable: false,
+            selectable: true,
+            data: {
+              label: (
+                <div className="tree-flow-node tree-flow-node-highlighted">
+                  <div className="node-avatar">{person.first_name.slice(0, 1).toUpperCase()}</div>
+                  <strong>{title}</strong>
+                  <span>{subtitle}</span>
+                </div>
+              ),
+            },
+          } satisfies FlowNode
+        })
+
+      const pathEdges: FlowEdge[] = highlightedTreePath.steps.map((step) => {
+        graph.setEdge(step.fromId, step.toId)
+
+        return {
+          id: `path-${step.fromId}-${step.toId}`,
+          source: step.fromId,
+          target: step.toId,
+          type: 'smoothstep',
+          label: step.relationLabel,
+          animated: true,
+          markerEnd: { type: 'arrowclosed' as any },
+          style: {
+            strokeWidth: 3,
+            stroke: '#f4b942',
+          },
+          labelStyle: {
+            fill: '#9a6c00',
+            fontSize: 11,
+            fontWeight: 700,
+          },
+        }
+      })
+
+      dagre.layout(graph)
+
+      return {
+        nodes: pathNodes.map((node) => {
+          const layoutNode = graph.node(node.id)
+
+          return {
+            ...node,
+            position: {
+              x: layoutNode.x - 95,
+              y: layoutNode.y - 59,
+            },
+          }
+        }),
+        edges: pathEdges,
+      }
     }
 
     const graph = new dagre.graphlib.Graph()
@@ -994,8 +1623,8 @@ function App() {
 
       addGraphNode(person.id, personNodeSize.width, personNodeSize.height, {
         id: person.id,
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
+        sourcePosition: 'bottom' as FlowNode['sourcePosition'],
+        targetPosition: 'top' as FlowNode['targetPosition'],
         draggable: false,
         selectable: true,
         data: {
@@ -1015,8 +1644,8 @@ function App() {
         id,
         draggable: false,
         selectable: false,
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
+        sourcePosition: 'bottom' as FlowNode['sourcePosition'],
+        targetPosition: 'top' as FlowNode['targetPosition'],
         data: {
           label: <div className="tree-flow-connector" aria-hidden="true" />,
         },
@@ -1048,7 +1677,7 @@ function App() {
         type: relationshipType === 'spouse' ? 'straight' : 'smoothstep',
         label,
         animated: relationshipType === 'spouse',
-        markerEnd: isParentEdge ? { type: MarkerType.ArrowClosed } : undefined,
+        markerEnd: isParentEdge ? { type: 'arrowclosed' as any } : undefined,
         style:
           relationshipType === 'spouse'
             ? { strokeWidth: 2, stroke: '#b45309' }
@@ -1207,7 +1836,418 @@ function App() {
     const edges = Array.from(edgeDefinitions.values())
 
     return { nodes, edges }
-  }, [collapsedTreeSections, selectedTreeConnections, selectedTreePerson, treeRelationships])
+  }, [
+    collapsedTreeSections,
+    highlightedTreePath,
+    selectedTreeConnections,
+    selectedTreePerson,
+    treePeopleLookup,
+    treeRelationships,
+  ])
+
+  const exportGraph = useMemo(() => {
+    const rootPerson = treePeopleLookup.get(exportRootId)
+
+    if (!rootPerson) {
+      return null
+    }
+
+    const personIds = new Set<string>([rootPerson.id])
+    const edgeIds = new Set<string>()
+    const edgeRows: Array<{
+      id: string
+      source: string
+      target: string
+      label: string
+      type: 'parent' | 'step_parent' | 'adopted_parent' | 'spouse' | 'sibling'
+    }> = []
+
+    const pushEdge = (edge: (typeof edgeRows)[number]) => {
+      if (edgeIds.has(edge.id)) {
+        return
+      }
+
+      edgeIds.add(edge.id)
+      edgeRows.push(edge)
+    }
+
+    const enqueueAncestors = (startId: string, depth: number) => {
+      if (depth >= exportGenerations) {
+        return
+      }
+
+      const parentEdges = treeRelationships.filter(
+        (relationship) =>
+          relationship.person_b_id === startId && isParentRelationshipType(relationship.relationship_type)
+      )
+
+      const filteredParentEdges =
+        depth === 0 && exportBranch !== 'both'
+          ? parentEdges.filter((relationship) => {
+              const parent = treePeopleLookup.get(relationship.person_a_id)
+              const normalizedGender = (parent?.gender ?? '').toLowerCase()
+
+              if (exportBranch === 'maternal') {
+                return normalizedGender.startsWith('f')
+              }
+
+              return normalizedGender.startsWith('m')
+            })
+          : parentEdges
+
+      for (const relationship of filteredParentEdges) {
+        personIds.add(relationship.person_a_id)
+        pushEdge({
+          id: relationship.id,
+          source: relationship.person_a_id,
+          target: relationship.person_b_id,
+          label:
+            relationship.relationship_type === 'step_parent'
+              ? 'step parent'
+              : relationship.relationship_type === 'adopted_parent'
+                ? 'adoptive parent'
+                : 'parent',
+          type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
+        })
+        enqueueAncestors(relationship.person_a_id, depth + 1)
+      }
+    }
+
+    const enqueueDescendants = (startId: string, depth: number) => {
+      if (depth >= exportGenerations) {
+        return
+      }
+
+      const childEdges = treeRelationships.filter(
+        (relationship) =>
+          relationship.person_a_id === startId && isParentRelationshipType(relationship.relationship_type)
+      )
+
+      for (const relationship of childEdges) {
+        personIds.add(relationship.person_b_id)
+        pushEdge({
+          id: relationship.id,
+          source: relationship.person_a_id,
+          target: relationship.person_b_id,
+          label:
+            relationship.relationship_type === 'step_parent'
+              ? 'step parent'
+              : relationship.relationship_type === 'adopted_parent'
+                ? 'adoptive parent'
+                : 'parent',
+          type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
+        })
+        enqueueDescendants(relationship.person_b_id, depth + 1)
+      }
+    }
+
+    if (exportDirection === 'ancestors' || exportDirection === 'both') {
+      enqueueAncestors(rootPerson.id, 0)
+    }
+
+    if (exportDirection === 'descendants' || exportDirection === 'both') {
+      enqueueDescendants(rootPerson.id, 0)
+    }
+
+    const includedSiblingIds = new Set<string>()
+
+    if (exportIncludeSiblings) {
+      for (const relationship of treeRelationships) {
+        if (
+          relationship.relationship_type === 'sibling' &&
+          (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
+        ) {
+          personIds.add(relationship.person_a_id)
+          personIds.add(relationship.person_b_id)
+          includedSiblingIds.add(relationship.person_a_id)
+          includedSiblingIds.add(relationship.person_b_id)
+          pushEdge({
+            id: relationship.id,
+            source: relationship.person_a_id,
+            target: relationship.person_b_id,
+            label: 'sibling',
+            type: 'sibling',
+          })
+        }
+      }
+    }
+
+    if (exportIncludeParentsOfSiblings) {
+      for (const relationship of treeRelationships) {
+        if (
+          isParentRelationshipType(relationship.relationship_type) &&
+          includedSiblingIds.has(relationship.person_b_id)
+        ) {
+          personIds.add(relationship.person_a_id)
+          personIds.add(relationship.person_b_id)
+          pushEdge({
+            id: relationship.id,
+            source: relationship.person_a_id,
+            target: relationship.person_b_id,
+            label:
+              relationship.relationship_type === 'step_parent'
+                ? 'step parent'
+                : relationship.relationship_type === 'adopted_parent'
+                  ? 'adoptive parent'
+                  : 'parent',
+            type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
+          })
+        }
+      }
+    }
+
+    if (exportIncludeSpouses) {
+      for (const relationship of treeRelationships) {
+        if (
+          relationship.relationship_type === 'spouse' &&
+          (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
+        ) {
+          personIds.add(relationship.person_a_id)
+          personIds.add(relationship.person_b_id)
+          pushEdge({
+            id: relationship.id,
+            source: relationship.person_a_id,
+            target: relationship.person_b_id,
+            label: 'spouse',
+            type: 'spouse',
+          })
+        }
+      }
+    }
+
+    if (exportIncludeSiblingSpouses) {
+      for (const relationship of treeRelationships) {
+        if (
+          relationship.relationship_type === 'spouse' &&
+          (includedSiblingIds.has(relationship.person_a_id) || includedSiblingIds.has(relationship.person_b_id))
+        ) {
+          personIds.add(relationship.person_a_id)
+          personIds.add(relationship.person_b_id)
+          pushEdge({
+            id: relationship.id,
+            source: relationship.person_a_id,
+            target: relationship.person_b_id,
+            label: 'spouse',
+            type: 'spouse',
+          })
+        }
+      }
+    }
+
+    if (exportIncludeChildrenOfSiblings) {
+      for (const relationship of treeRelationships) {
+        if (
+          isParentRelationshipType(relationship.relationship_type) &&
+          includedSiblingIds.has(relationship.person_a_id)
+        ) {
+          personIds.add(relationship.person_a_id)
+          personIds.add(relationship.person_b_id)
+          pushEdge({
+            id: relationship.id,
+            source: relationship.person_a_id,
+            target: relationship.person_b_id,
+            label:
+              relationship.relationship_type === 'step_parent'
+                ? 'step parent'
+                : relationship.relationship_type === 'adopted_parent'
+                  ? 'adoptive parent'
+                  : 'parent',
+            type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
+          })
+        }
+      }
+    }
+
+    const exportPeople = Array.from(personIds)
+      .map((personId) => treePeopleLookup.get(personId))
+      .filter((person): person is TreePersonItem => Boolean(person))
+
+    const graph = new dagre.graphlib.Graph()
+    graph.setGraph({
+      rankdir: exportDirection === 'ancestors' ? 'BT' : 'TB',
+      ranksep: 90,
+      nodesep: 32,
+      marginx: 24,
+      marginy: 24,
+    })
+    graph.setDefaultEdgeLabel(() => ({}))
+
+    const nodeWidth = exportDetailLevel === 'minimal' ? 150 : exportDetailLevel === 'standard' ? 180 : 210
+    const nodeHeight = exportDetailLevel === 'minimal' ? 58 : exportDetailLevel === 'standard' ? 82 : 116
+
+    for (const person of exportPeople) {
+      graph.setNode(person.id, { width: nodeWidth, height: nodeHeight })
+    }
+
+    for (const edge of edgeRows) {
+      graph.setEdge(edge.source, edge.target)
+    }
+
+    dagre.layout(graph)
+
+    const template =
+      EXPORT_TEMPLATES.find((item) => item.id === exportTemplateId) ?? EXPORT_TEMPLATES[0]
+
+    const laidOutNodes = exportPeople.map((person) => {
+      const layoutNode = graph.node(person.id)
+
+      return {
+        person,
+        x: layoutNode.x - nodeWidth / 2,
+        y: layoutNode.y - nodeHeight / 2,
+        width: nodeWidth,
+        height: nodeHeight,
+      }
+    })
+
+    const xValues = laidOutNodes.map((node) => node.x)
+    const yValues = laidOutNodes.map((node) => node.y)
+    const maxXValues = laidOutNodes.map((node) => node.x + node.width)
+    const maxYValues = laidOutNodes.map((node) => node.y + node.height)
+    const contentWidth = Math.max(...maxXValues, 0) - Math.min(...xValues, 0) + 80
+    const contentHeight = Math.max(...maxYValues, 0) - Math.min(...yValues, 0) + 80
+
+    const presetSizes: Record<'18x24' | '24x36' | '36x48', { width: number; height: number }> = {
+      '18x24': { width: 1728, height: 2304 },
+      '24x36': { width: 2304, height: 3456 },
+      '36x48': { width: 3456, height: 4608 },
+    }
+
+    const targetSize =
+      exportFormat === 'letter'
+        ? { width: 816, height: 1056 }
+        : exportPosterSize === 'dynamic'
+          ? { width: Math.max(1200, contentWidth), height: Math.max(900, contentHeight) }
+          : presetSizes[exportPosterSize]
+
+    const scale = Math.min(
+      (targetSize.width - 48) / Math.max(contentWidth, 1),
+      (targetSize.height - 48) / Math.max(contentHeight, 1)
+    )
+    const scaledBodyFont = 16 * scale
+    const warning =
+      exportFormat === 'letter' && scaledBodyFont < 12
+        ? 'Poster recommended for readability.'
+        : ''
+
+    const edgeMarkup = edgeRows
+      .map((edge) => {
+        const sourceNode = graph.node(edge.source)
+        const targetNode = graph.node(edge.target)
+        const stroke =
+          edge.type === 'spouse'
+            ? '#b45309'
+            : edge.type === 'sibling'
+              ? '#2563eb'
+            : edge.type === 'step_parent'
+              ? '#7c3aed'
+              : edge.type === 'adopted_parent'
+                ? '#059669'
+                : template.stroke
+        const dashArray =
+          edge.type === 'step_parent' ? '8 6' : edge.type === 'adopted_parent' ? '4 4' : '0'
+
+        return `<line x1="${sourceNode.x}" y1="${sourceNode.y + nodeHeight / 2}" x2="${targetNode.x}" y2="${targetNode.y - nodeHeight / 2}" stroke="${stroke}" stroke-width="${edge.type === 'spouse' ? 2 : 2.5}" stroke-dasharray="${dashArray}" />`
+      })
+      .join('')
+
+    const nodeMarkup = laidOutNodes
+      .map((node) => {
+        const fullName = escapeSvgText(`${node.person.first_name} ${node.person.last_name}`.trim())
+        const years = escapeSvgText(
+          node.person.birth_date ? `${new Date(node.person.birth_date).getFullYear()}` : 'Year unknown'
+        )
+        const location = escapeSvgText(
+          [node.person.city, node.person.state].filter(Boolean).join(', ') || 'Location not set'
+        )
+        const avatarInitial = escapeSvgText(node.person.first_name.slice(0, 1).toUpperCase())
+        const avatarMarkup =
+          exportDetailLevel === 'full'
+            ? `<circle cx="${node.x + 22}" cy="${node.y + 22}" r="14" fill="${template.accent}" opacity="0.18" />
+               <text x="${node.x + 22}" y="${node.y + 27}" text-anchor="middle" font-size="14" font-weight="700" fill="${template.stroke}">${avatarInitial}</text>`
+            : ''
+        const titleX = exportDetailLevel === 'full' ? node.x + 46 : node.x + 14
+        const yearsMarkup =
+          exportDetailLevel === 'minimal'
+            ? ''
+            : `<text x="${titleX}" y="${node.y + 50}" font-size="12" fill="#6b7280">${years}</text>`
+        const fullMarkup =
+          exportDetailLevel === 'full'
+            ? `<text x="${node.x + 14}" y="${node.y + 74}" font-size="12" fill="#6b7280">${location}</text>`
+            : ''
+
+        return `<g>
+          <rect x="${node.x}" y="${node.y}" rx="12" ry="12" width="${node.width}" height="${node.height}" fill="${template.fill}" stroke="${template.stroke}" stroke-width="2" />
+          ${avatarMarkup}
+          <text x="${titleX}" y="${node.y + 28}" font-size="14" font-weight="700" fill="${template.stroke}">${fullName}</text>
+          ${yearsMarkup}
+          ${fullMarkup}
+        </g>`
+      })
+      .join('')
+
+    const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetSize.width}" height="${targetSize.height}" viewBox="0 0 ${targetSize.width} ${targetSize.height}">
+      <rect width="100%" height="100%" fill="#f8f9fb" />
+      <g transform="translate(24 24) scale(${scale})">
+        ${edgeMarkup}
+        ${nodeMarkup}
+      </g>
+    </svg>`
+
+    return {
+      svgMarkup,
+      width: targetSize.width,
+      height: targetSize.height,
+      warning,
+      nodeCount: exportPeople.length,
+    }
+  }, [
+    exportBranch,
+    exportIncludeChildrenOfSiblings,
+    exportIncludeParentsOfSiblings,
+    exportDetailLevel,
+    exportDirection,
+    exportFormat,
+    exportGenerations,
+    exportIncludeSiblingSpouses,
+    exportIncludeSiblings,
+    exportIncludeSpouses,
+    exportPosterSize,
+    exportRootId,
+    exportTemplateId,
+    treePeopleLookup,
+    treeRelationships,
+  ])
+
+  const letterNodeCountWarning = useMemo(() => {
+    if (exportFormat !== 'letter') {
+      return ''
+    }
+
+    const estimatedNodeCount = exportGraph?.nodeCount ?? 0
+
+    if (estimatedNodeCount >= 16) {
+      return 'This node count may make Letter output hard to read. Consider a poster format.'
+    }
+
+    return ''
+  }, [exportFormat, exportGraph])
+
+  const largeExportWarning = useMemo(() => {
+    if (!exportGraph) {
+      return ''
+    }
+
+    if (exportGraph.nodeCount >= 36) {
+      return 'Large branch detected. Reduce generations or use Minimal detail if the preview feels crowded.'
+    }
+
+    if (exportGraph.nodeCount >= 24 && exportDetailLevel === 'full') {
+      return 'Full detail on this branch may export slowly. Standard or Minimal detail will produce a cleaner print.'
+    }
+
+    return ''
+  }, [exportDetailLevel, exportGraph])
 
   useEffect(() => {
     if (!treeFlowInstance || selectedTreeGraph.nodes.length === 0) {
@@ -1272,6 +2312,93 @@ function App() {
 
         setBusinessDirectoryItems(items)
         setSelectedBusinessId((current) => (current && items.some((item) => item.id === current) ? current : items[0]?.id ?? ''))
+      })
+
+    return () => {
+      active = false
+    }
+  }, [currentFamilyId, isAuthenticated])
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId) {
+      setFamilyMapClusters([])
+      setSelectedMapClusterId('')
+      return
+    }
+
+    let active = true
+    setMapMode('loading')
+    setMapError('')
+
+    void client
+      .from('people')
+      .select('id, first_name, last_name, city, state, zip')
+      .eq('family_id', currentFamilyId)
+      .then(({ data, error }) => {
+        if (!active) {
+          return
+        }
+
+        setMapMode('idle')
+
+        if (error) {
+          setMapError(error.message)
+          return
+        }
+
+        const grouped = new Map<
+          string,
+          { city: string | null; state: string | null; zip: string | null; peopleNames: string[] }
+        >()
+
+        for (const row of data ?? []) {
+          const city = row.city?.trim() || null
+          const state = row.state?.trim() || null
+          const zip = row.zip?.trim() || null
+
+          if (!city && !state && !zip) {
+            continue
+          }
+
+          const key = `${city ?? ''}|${state ?? ''}|${zip ?? ''}`
+
+          if (!grouped.has(key)) {
+            grouped.set(key, {
+              city,
+              state,
+              zip,
+              peopleNames: [],
+            })
+          }
+
+          grouped
+            .get(key)
+            ?.peopleNames.push(`${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || 'Unknown member')
+        }
+
+        const clusters = Array.from(grouped.entries()).map(([id, cluster]) => {
+          const label = [cluster.city, cluster.state, cluster.zip].filter(Boolean).join(', ')
+          const coordinates = estimateLocationCoordinates(cluster.city, cluster.state, cluster.zip)
+
+          return {
+            id,
+            label,
+            city: cluster.city,
+            state: cluster.state,
+            zip: cluster.zip,
+            count: cluster.peopleNames.length,
+            peopleNames: cluster.peopleNames.sort((a, b) => a.localeCompare(b)),
+            latitude: coordinates.latitude,
+            longitude: coordinates.longitude,
+          } satisfies FamilyMapCluster
+        })
+
+        setFamilyMapClusters(clusters)
+        setSelectedMapClusterId((current) =>
+          current && clusters.some((cluster) => cluster.id === current) ? current : clusters[0]?.id ?? ''
+        )
       })
 
     return () => {
@@ -3173,6 +4300,335 @@ function App() {
     })
   }
 
+  const handleRunPathfinder = () => {
+    setPathfinderError('')
+    setPathfinderResult(null)
+
+    if (!pathfinderPersonAId || !pathfinderPersonBId) {
+      setPathfinderError('Select Person B to continue.')
+      return
+    }
+
+    if (pathfinderPersonAId === pathfinderPersonBId) {
+      const samePersonName =
+        treePeopleLookup.get(pathfinderPersonAId) &&
+        `${treePeopleLookup.get(pathfinderPersonAId)?.first_name} ${treePeopleLookup
+          .get(pathfinderPersonAId)
+          ?.last_name}`.trim()
+
+      setPathfinderResult({
+        personAId: pathfinderPersonAId,
+        personBId: pathfinderPersonBId,
+        summary: `${samePersonName} is the same person.`,
+        pathPersonIds: [pathfinderPersonAId],
+        steps: [],
+      })
+      return
+    }
+
+    const visited = new Set<string>([pathfinderPersonAId])
+    const queue: Array<{ personId: string; pathPersonIds: string[]; steps: PathfinderStep[] }> = [
+      {
+        personId: pathfinderPersonAId,
+        pathPersonIds: [pathfinderPersonAId],
+        steps: [],
+      },
+    ]
+
+    while (queue.length > 0) {
+      const current = queue.shift()
+
+      if (!current) {
+        continue
+      }
+
+      const neighbors = relationshipAdjacency.get(current.personId) ?? []
+
+      for (const neighbor of neighbors) {
+        if (visited.has(neighbor.personId)) {
+          continue
+        }
+
+        const nextPath = [...current.pathPersonIds, neighbor.personId]
+        const nextSteps = [
+          ...current.steps,
+          {
+            fromId: current.personId,
+            toId: neighbor.personId,
+            relationLabel: neighbor.relationLabel,
+          },
+        ]
+
+        if (neighbor.personId === pathfinderPersonBId) {
+          const personAName = `${
+            treePeopleLookup.get(pathfinderPersonAId)?.first_name ?? 'Person A'
+          } ${treePeopleLookup.get(pathfinderPersonAId)?.last_name ?? ''}`.trim()
+          const personBName = `${
+            treePeopleLookup.get(pathfinderPersonBId)?.first_name ?? 'Person B'
+          } ${treePeopleLookup.get(pathfinderPersonBId)?.last_name ?? ''}`.trim()
+
+          setPathfinderResult({
+            personAId: pathfinderPersonAId,
+            personBId: pathfinderPersonBId,
+            summary: buildPathfinderSummary(
+              personAName,
+              personBName,
+              nextSteps.map((step) => step.relationLabel)
+            ),
+            pathPersonIds: nextPath,
+            steps: nextSteps,
+          })
+          return
+        }
+
+        visited.add(neighbor.personId)
+        queue.push({
+          personId: neighbor.personId,
+          pathPersonIds: nextPath,
+          steps: nextSteps,
+        })
+      }
+    }
+
+    setPathfinderError('No connection found yet, this tree may be missing relationships.')
+  }
+
+  const handleHighlightPathInTree = () => {
+    if (!pathfinderResult) {
+      return
+    }
+
+    setHighlightedTreePath(pathfinderResult)
+    setTreeRootId(pathfinderResult.personAId)
+    setSelectedTreePersonId(pathfinderResult.personAId)
+    setWorkspaceView('tree')
+  }
+
+  const handleDownloadExportSvg = () => {
+    if (!exportGraph) {
+      setExportError('No export preview is available yet.')
+      return
+    }
+
+    setExportError('')
+    downloadBlob(
+      new Blob([exportGraph.svgMarkup], { type: 'image/svg+xml;charset=utf-8' }),
+      `family-tree-${exportFormat}.svg`
+    )
+  }
+
+  const applyExportPreset = (
+    preset: keyof typeof EXPORT_PRESET_LABELS
+  ) => {
+    setExportError('')
+    setLastExportPresetId(preset)
+
+    if (preset === 'immediate_family') {
+      setExportDirection('both')
+      setExportBranch('both')
+      setExportGenerations(1)
+      setExportIncludeSpouses(true)
+      setExportIncludeSiblings(true)
+      setExportIncludeParentsOfSiblings(false)
+      setExportIncludeSiblingSpouses(false)
+      setExportIncludeChildrenOfSiblings(false)
+      setExportDetailLevel('standard')
+      setExportFormat('letter')
+      setExportPosterSize('dynamic')
+      setExportTemplateId('heritage')
+      return
+    }
+
+    if (preset === 'ancestor_fan') {
+      setExportDirection('ancestors')
+      setExportBranch('both')
+      setExportGenerations(4)
+      setExportIncludeSpouses(false)
+      setExportIncludeSiblings(false)
+      setExportIncludeParentsOfSiblings(false)
+      setExportIncludeSiblingSpouses(false)
+      setExportIncludeChildrenOfSiblings(false)
+      setExportDetailLevel('minimal')
+      setExportFormat('poster')
+      setExportPosterSize('24x36')
+      setExportTemplateId('legacy')
+      return
+    }
+
+    if (preset === 'maternal_line') {
+      setExportDirection('ancestors')
+      setExportBranch('maternal')
+      setExportGenerations(4)
+      setExportIncludeSpouses(false)
+      setExportIncludeSiblings(false)
+      setExportIncludeParentsOfSiblings(false)
+      setExportIncludeSiblingSpouses(false)
+      setExportIncludeChildrenOfSiblings(false)
+      setExportDetailLevel('minimal')
+      setExportFormat('poster')
+      setExportPosterSize('24x36')
+      setExportTemplateId('sage')
+      return
+    }
+
+    if (preset === 'paternal_line') {
+      setExportDirection('ancestors')
+      setExportBranch('paternal')
+      setExportGenerations(4)
+      setExportIncludeSpouses(false)
+      setExportIncludeSiblings(false)
+      setExportIncludeParentsOfSiblings(false)
+      setExportIncludeSiblingSpouses(false)
+      setExportIncludeChildrenOfSiblings(false)
+      setExportDetailLevel('minimal')
+      setExportFormat('poster')
+      setExportPosterSize('24x36')
+      setExportTemplateId('navy')
+      return
+    }
+
+    if (preset === 'one_page_letter') {
+      setExportDirection('both')
+      setExportBranch('both')
+      setExportGenerations(2)
+      setExportIncludeSpouses(true)
+      setExportIncludeSiblings(false)
+      setExportIncludeParentsOfSiblings(false)
+      setExportIncludeSiblingSpouses(false)
+      setExportIncludeChildrenOfSiblings(false)
+      setExportDetailLevel('minimal')
+      setExportFormat('letter')
+      setExportPosterSize('dynamic')
+      setExportTemplateId('slate')
+      return
+    }
+
+    setExportDirection('descendants')
+    setExportBranch('both')
+    setExportGenerations(4)
+    setExportIncludeSpouses(true)
+    setExportIncludeSiblings(false)
+    setExportIncludeParentsOfSiblings(false)
+    setExportIncludeSiblingSpouses(false)
+    setExportIncludeChildrenOfSiblings(false)
+    setExportDetailLevel('full')
+    setExportFormat('poster')
+    setExportPosterSize('24x36')
+    setExportTemplateId('linen')
+  }
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const handleDownloadExportPng = async () => {
+    if (!exportGraph) {
+      setExportError('No export preview is available yet.')
+      return
+    }
+
+    setExportMode('exporting')
+    setExportError('')
+
+    try {
+      const svgBlob = new Blob([exportGraph.svgMarkup], { type: 'image/svg+xml;charset=utf-8' })
+      const svgUrl = URL.createObjectURL(svgBlob)
+      const image = new Image()
+
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('Unable to render the SVG export preview.'))
+        image.src = svgUrl
+      })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = exportGraph.width
+      canvas.height = exportGraph.height
+      const context = canvas.getContext('2d')
+
+      if (!context) {
+        URL.revokeObjectURL(svgUrl)
+        throw new Error('Canvas export is not available in this browser.')
+      }
+
+      context.fillStyle = '#f8f9fb'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      URL.revokeObjectURL(svgUrl)
+
+      const pngBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+
+      if (!pngBlob) {
+        throw new Error('PNG export failed.')
+      }
+
+      downloadBlob(pngBlob, `family-tree-${exportFormat}.png`)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'PNG export failed.')
+    } finally {
+      setExportMode('idle')
+    }
+  }
+
+  const handleDownloadExportPdf = async () => {
+    if (!exportGraph) {
+      setExportError('No export preview is available yet.')
+      return
+    }
+
+    setExportMode('exporting')
+    setExportError('')
+
+    try {
+      const svgBlob = new Blob([exportGraph.svgMarkup], { type: 'image/svg+xml;charset=utf-8' })
+      const svgUrl = URL.createObjectURL(svgBlob)
+      const image = new Image()
+
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('Unable to render the SVG export preview.'))
+        image.src = svgUrl
+      })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = exportGraph.width
+      canvas.height = exportGraph.height
+      const context = canvas.getContext('2d')
+
+      if (!context) {
+        URL.revokeObjectURL(svgUrl)
+        throw new Error('Canvas export is not available in this browser.')
+      }
+
+      context.fillStyle = '#f8f9fb'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      URL.revokeObjectURL(svgUrl)
+
+      const pngDataUrl = canvas.toDataURL('image/png')
+      const { jsPDF } = await import('jspdf')
+      const pdf = new jsPDF({
+        orientation: exportGraph.width > exportGraph.height ? 'landscape' : 'portrait',
+        unit: 'pt',
+        format: [exportGraph.width, exportGraph.height],
+      })
+
+      pdf.addImage(pngDataUrl, 'PNG', 0, 0, exportGraph.width, exportGraph.height)
+      pdf.save(`family-tree-${exportFormat}.pdf`)
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'PDF export failed.')
+    } finally {
+      setExportMode('idle')
+    }
+  }
+
   const renderLanding = () => (
     <>
       <header className="marketing-header">
@@ -3767,7 +5223,22 @@ function App() {
                   <div className="quick-actions">
                     {['View Tree', 'Find Connection', 'Invite Family', 'Add Member', 'Businesses', 'Map'].map(
                       (action) => (
-                        <button className="action-tile" key={action} type="button">
+                        <button
+                          className="action-tile"
+                          key={action}
+                          onClick={() => {
+                            if (action === 'View Tree') {
+                              setWorkspaceView('tree')
+                            } else if (action === 'Find Connection') {
+                              setWorkspaceView('pathfinder')
+                            } else if (action === 'Businesses') {
+                              setWorkspaceView('businesses')
+                            } else if (action === 'Map') {
+                              setWorkspaceView('map')
+                            }
+                          }}
+                          type="button"
+                        >
                           {action}
                         </button>
                       )
@@ -3886,6 +5357,21 @@ function App() {
                       </p>
                     </div>
                   </div>
+                  {highlightedTreePath ? (
+                    <div className="success-callout path-highlight-banner" role="status">
+                      <div>
+                        <strong>Path highlight active</strong>
+                        <p>{highlightedTreePath.summary}</p>
+                      </div>
+                      <button
+                        className="secondary-button"
+                        onClick={() => setHighlightedTreePath(null)}
+                        type="button"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  ) : null}
                   {treeError ? (
                     <div className="error-callout" role="alert">
                       <strong>Tree error</strong>
@@ -3978,36 +5464,20 @@ function App() {
                               {collapsedTreeSections.spouses ? 'Expand' : 'Collapse'} Spouses ({treeSectionCounts.spouses})
                             </button>
                           </div>
-                          <div className="tree-flow-shell">
-                            <ReactFlow
+                          <Suspense fallback={<div className="tree-flow-shell"><p className="muted-text">Loading tree canvas...</p></div>}>
+                            <TreeCanvas
                               edges={selectedTreeGraph.edges}
-                              fitView
-                              fitViewOptions={{ padding: 0.2 }}
                               nodes={selectedTreeGraph.nodes}
-                              nodesDraggable={false}
-                              nodesFocusable
                               onInit={setTreeFlowInstance}
-                              onNodeClick={(_, node) => {
-                                const nodeId = String(node.id)
-
-                                if (nodeId.startsWith('family-group-') || nodeId.startsWith('sibling-group-')) {
-                                  return
-                                }
-
-                                setSelectedTreePersonId(nodeId)
-                              }}
-                              proOptions={{ hideAttribution: true }}
-                              zoomOnScroll={false}
-                            >
-                              <Background gap={24} size={1} />
-                              <Controls showInteractive={false} />
-                            </ReactFlow>
-                          </div>
+                              onNodeSelect={setSelectedTreePersonId}
+                            />
+                          </Suspense>
                           <div className="card tree-legend">
                             <p className="eyebrow">Graph Layout</p>
                             <p className="muted-text">
-                              Dagre now spaces the branch automatically, couples share a family connector before
-                              children branch downward, and dense generations can be collapsed or expanded on demand.
+                              {highlightedTreePath
+                                ? 'Path focus mode highlights the exact connection in gold and temporarily hides unrelated nodes.'
+                                : 'Dagre now spaces the branch automatically, couples share a family connector before children branch downward, and dense generations can be collapsed or expanded on demand.'}
                             </p>
                           </div>
                           <div className="card">
@@ -4205,6 +5675,29 @@ function App() {
                     </aside>
                   </div>
                 </section>
+              ) : workspaceView === 'pathfinder' ? (
+                <Suspense fallback={<section className="workspace-panel"><div className="card"><p className="muted-text">Loading pathfinder...</p></div></section>}>
+                  <PathfinderWorkspace
+                    clearPathfinderResult={() => {
+                      setPathfinderResult(null)
+                      setPathfinderError('')
+                    }}
+                    currentPersonId={currentPersonId}
+                    onHighlightPathInTree={handleHighlightPathInTree}
+                    onRunPathfinder={handleRunPathfinder}
+                    pathfinderError={pathfinderError}
+                    pathfinderMode={pathfinderMode}
+                    pathfinderPersonAId={pathfinderPersonAId}
+                    pathfinderPersonBId={pathfinderPersonBId}
+                    pathfinderPersonBQuery={pathfinderPersonBQuery}
+                    pathfinderResult={pathfinderResult}
+                    pathfinderSearchResults={pathfinderSearchResults}
+                    setPathfinderPersonAId={setPathfinderPersonAId}
+                    setPathfinderPersonBId={setPathfinderPersonBId}
+                    setPathfinderPersonBQuery={setPathfinderPersonBQuery}
+                    treePeople={treePeople}
+                  />
+                </Suspense>
               ) : workspaceView === 'messages' ? (
                 <section className="workspace-panel">
                   <div className="panel-header">
@@ -4485,6 +5978,340 @@ function App() {
                         <span className="chip">{item.businessCategory || 'Uncategorized'}</span>
                       </button>
                     ))}
+                  </div>
+                </section>
+              ) : workspaceView === 'map' ? (
+                <Suspense fallback={<section className="workspace-panel"><div className="card"><p className="muted-text">Loading map...</p></div></section>}>
+                  <MapWorkspace
+                    familyMapClusters={familyMapClusters}
+                    mapError={mapError}
+                    mapMode={mapMode}
+                    selectedMapClusterId={selectedMapClusterId}
+                    setSelectedMapClusterId={setSelectedMapClusterId}
+                  />
+                </Suspense>
+              ) : workspaceView === 'export' ? (
+                <section className="workspace-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Export / Print Tree</p>
+                      <h2>Deterministic tree export</h2>
+                      <p className="panel-copy">
+                        Generate a clean SVG preview, then download a PDF or PNG without screenshotting the
+                        interactive tree.
+                      </p>
+                    </div>
+                  </div>
+                  {exportError ? (
+                    <div className="error-callout" role="alert">
+                      <strong>Export error</strong>
+                      <p>{exportError}</p>
+                    </div>
+                  ) : null}
+                  <div className="map-layout">
+                    <aside className="card form-card">
+                      <div className="quick-actions">
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.immediate_family
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('immediate_family')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.immediate_family}
+                        </button>
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.ancestor_fan
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('ancestor_fan')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.ancestor_fan}
+                        </button>
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.descendant_poster
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('descendant_poster')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.descendant_poster}
+                        </button>
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.maternal_line
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('maternal_line')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.maternal_line}
+                        </button>
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.paternal_line
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('paternal_line')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.paternal_line}
+                        </button>
+                        <button
+                          className={`action-tile ${
+                            activeExportPresetLabel === EXPORT_PRESET_LABELS.one_page_letter
+                              ? 'action-tile-active'
+                              : ''
+                          }`}
+                          onClick={() => applyExportPreset('one_page_letter')}
+                          type="button"
+                        >
+                          {EXPORT_PRESET_LABELS.one_page_letter}
+                        </button>
+                      </div>
+                      <div className="status-callout">
+                        <strong>
+                          Preset Active: {activeExportPresetLabel === 'Custom' ? 'Custom Settings' : activeExportPresetLabel}
+                        </strong>
+                        <p>{exportScopeSummary}</p>
+                        <p>
+                          Estimated node count: {exportGraph?.nodeCount ?? 0}
+                        </p>
+                        {letterNodeCountWarning ? <p>{letterNodeCountWarning}</p> : null}
+                        {largeExportWarning ? <p>{largeExportWarning}</p> : null}
+                        {activeExportPresetLabel === 'Custom' && lastExportPresetId ? (
+                          <div className="banner-actions">
+                            <button
+                              className="ghost-button"
+                              onClick={() => applyExportPreset(lastExportPresetId)}
+                              type="button"
+                            >
+                              Reset to {EXPORT_PRESET_LABELS[lastExportPresetId]}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                      <label>
+                        Root person
+                        <select
+                          className="text-input"
+                          onChange={(event) => setExportRootId(event.target.value)}
+                          value={exportRootId}
+                        >
+                          {treePeople.map((person) => (
+                            <option key={person.id} value={person.id}>
+                              {`${person.first_name} ${person.last_name}`.trim()}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Direction
+                        <select
+                          className="text-input"
+                          onChange={(event) =>
+                            setExportDirection(event.target.value as 'ancestors' | 'descendants' | 'both')
+                          }
+                          value={exportDirection}
+                        >
+                          <option value="ancestors">Ancestors</option>
+                          <option value="descendants">Descendants</option>
+                          <option value="both">Both</option>
+                        </select>
+                      </label>
+                      <label>
+                        Branch
+                        <select
+                          className="text-input"
+                          onChange={(event) =>
+                            setExportBranch(event.target.value as 'both' | 'maternal' | 'paternal')
+                          }
+                          value={exportBranch}
+                        >
+                          <option value="both">Both</option>
+                          <option value="maternal">Maternal</option>
+                          <option value="paternal">Paternal</option>
+                        </select>
+                      </label>
+                      <label>
+                        Generations
+                        <input
+                          className="text-input"
+                          max={6}
+                          min={1}
+                          onChange={(event) =>
+                            setExportGenerations(Math.max(1, Math.min(6, Number(event.target.value) || 1)))
+                          }
+                          type="number"
+                          value={exportGenerations}
+                        />
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={exportIncludeSpouses}
+                          onChange={(event) => setExportIncludeSpouses(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>Include spouses</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={exportIncludeSiblings}
+                          onChange={(event) => setExportIncludeSiblings(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>Include siblings</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={exportIncludeParentsOfSiblings}
+                          disabled={!exportIncludeSiblings}
+                          onChange={(event) => setExportIncludeParentsOfSiblings(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>Include parents of siblings</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={exportIncludeSiblingSpouses}
+                          disabled={!exportIncludeSiblings}
+                          onChange={(event) => setExportIncludeSiblingSpouses(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>Include siblings&apos; spouses</span>
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          checked={exportIncludeChildrenOfSiblings}
+                          disabled={!exportIncludeSiblings}
+                          onChange={(event) => setExportIncludeChildrenOfSiblings(event.target.checked)}
+                          type="checkbox"
+                        />
+                        <span>Include children of siblings</span>
+                      </label>
+                      <label>
+                        Detail level
+                        <select
+                          className="text-input"
+                          onChange={(event) =>
+                            setExportDetailLevel(event.target.value as 'minimal' | 'standard' | 'full')
+                          }
+                          value={exportDetailLevel}
+                        >
+                          <option value="minimal">Minimal</option>
+                          <option value="standard">Standard</option>
+                          <option value="full">Full</option>
+                        </select>
+                      </label>
+                      <label>
+                        Template
+                        <select
+                          className="text-input"
+                          onChange={(event) =>
+                            setExportTemplateId(
+                              event.target.value as (typeof EXPORT_TEMPLATES)[number]['id']
+                            )
+                          }
+                          value={exportTemplateId}
+                        >
+                          {EXPORT_TEMPLATES.map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Output
+                        <select
+                          className="text-input"
+                          onChange={(event) => setExportFormat(event.target.value as 'letter' | 'poster')}
+                          value={exportFormat}
+                        >
+                          <option value="letter">Letter (8.5 x 11)</option>
+                          <option value="poster">Poster</option>
+                        </select>
+                      </label>
+                      {exportFormat === 'poster' ? (
+                        <label>
+                          Poster size
+                          <select
+                            className="text-input"
+                            onChange={(event) =>
+                              setExportPosterSize(
+                                event.target.value as 'dynamic' | '18x24' | '24x36' | '36x48'
+                              )
+                            }
+                            value={exportPosterSize}
+                          >
+                            <option value="dynamic">Dynamic</option>
+                            <option value="18x24">18 x 24</option>
+                            <option value="24x36">24 x 36</option>
+                            <option value="36x48">36 x 48</option>
+                          </select>
+                        </label>
+                      ) : null}
+                      <div className="banner-actions">
+                        <button
+                          className="primary-button"
+                          disabled={exportMode === 'exporting' || !exportGraph}
+                          onClick={handleDownloadExportSvg}
+                          type="button"
+                        >
+                          Download SVG
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={exportMode === 'exporting' || !exportGraph}
+                          onClick={() => void handleDownloadExportPdf()}
+                          type="button"
+                        >
+                          {exportMode === 'exporting' ? 'Exporting...' : 'Download PDF'}
+                        </button>
+                        <button
+                          className="secondary-button"
+                          disabled={exportMode === 'exporting' || !exportGraph}
+                          onClick={() => void handleDownloadExportPng()}
+                          type="button"
+                        >
+                          Download PNG
+                        </button>
+                      </div>
+                    </aside>
+                    <div className="card">
+                      <p className="eyebrow">SVG Preview</p>
+                      {exportGraph ? (
+                        <>
+                          {exportGraph.warning ? (
+                            <div className="status-callout">
+                              <strong>Readability warning</strong>
+                              <p>{exportGraph.warning}</p>
+                            </div>
+                          ) : null}
+                          {largeExportWarning ? (
+                            <div className="status-callout">
+                              <strong>Large branch warning</strong>
+                              <p>{largeExportWarning}</p>
+                            </div>
+                          ) : null}
+                          <div
+                            className="export-preview-shell"
+                            dangerouslySetInnerHTML={{ __html: exportGraph.svgMarkup }}
+                          />
+                        </>
+                      ) : (
+                        <p className="muted-text">Select a valid root person to generate the export preview.</p>
+                      )}
+                    </div>
                   </div>
                 </section>
               ) : workspaceView === 'profile' ? (
