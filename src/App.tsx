@@ -175,6 +175,9 @@ const FAMILY_ID_STORAGE_KEY = 'family-connect.current-family-id'
 const FAMILY_NAME_STORAGE_KEY = 'family-connect.current-family-name'
 const PERSON_ID_STORAGE_KEY = 'family-connect.current-person-id'
 const PERSON_NAME_STORAGE_KEY = 'family-connect.current-person-name'
+const DEV_NO_AUTH_TEST_MODE = import.meta.env.VITE_DEV_NO_AUTH === 'true'
+const DEV_TEST_FAMILY_ID = 'dev-family-local'
+const DEV_TEST_PERSON_ID = 'dev-person-local'
 
 function createInviteToken() {
   const randomPart =
@@ -434,13 +437,13 @@ function buildProfileForm(record: ProfileRecord) {
 }
 
 function App() {
-  const [route, setRoute] = useState<Route>('landing')
+  const [route, setRoute] = useState<Route>(DEV_NO_AUTH_TEST_MODE ? 'workspace' : 'landing')
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('home')
   const [authMode, setAuthMode] = useState<'idle' | 'submitting'>('idle')
   const [familyMode, setFamilyMode] = useState<'idle' | 'submitting'>('idle')
   const [homeMode, setHomeMode] = useState<'idle' | 'loading' | 'posting' | 'updating'>('idle')
-  const [authReady, setAuthReady] = useState(!isSupabaseConfigured())
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [authReady, setAuthReady] = useState(DEV_NO_AUTH_TEST_MODE || !isSupabaseConfigured())
+  const [isAuthenticated, setIsAuthenticated] = useState(DEV_NO_AUTH_TEST_MODE)
   const [authForm, setAuthForm] = useState({
     email: '',
     password: '',
@@ -598,10 +601,46 @@ function App() {
     fatherName: '',
   })
   const [status, setStatus] = useState(
-    'Milestone 1 started: landing, auth, family setup, onboarding, and workspace are now connected.'
+    DEV_NO_AUTH_TEST_MODE
+      ? 'Testing mode is enabled. No login is required and demo family context is seeded locally.'
+      : 'Milestone 1 started: landing, auth, family setup, onboarding, and workspace are now connected.'
   )
 
   useEffect(() => {
+    if (!DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
+    setAuthReady(true)
+    setIsAuthenticated(true)
+
+    if (!currentFamilyId) {
+      setCurrentFamilyId(DEV_TEST_FAMILY_ID)
+    }
+
+    if (!familyName.trim()) {
+      setFamilyName('Demo Family')
+    }
+
+    if (!currentPersonId) {
+      setCurrentPersonId(DEV_TEST_PERSON_ID)
+    }
+
+    if (!currentPersonName.trim()) {
+      setCurrentPersonName('Demo Tester')
+    }
+
+    if (route === 'landing' || route === 'signup' || route === 'login') {
+      setRoute('workspace')
+    }
+  }, [currentFamilyId, currentPersonId, currentPersonName, familyName, route])
+
+  useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      setAuthReady(true)
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client) {
@@ -3277,6 +3316,13 @@ function App() {
   }
 
   const handleLogout = async () => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      setAuthError('')
+      setStatus('Testing mode is enabled. Log out is disabled while VITE_DEV_NO_AUTH=true.')
+      setRoute('workspace')
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client) {
@@ -5175,6 +5221,12 @@ function App() {
           </button>
         </div>
       </header>
+      {DEV_NO_AUTH_TEST_MODE ? (
+        <div className="status-callout">
+          <strong>Testing mode active</strong>
+          <p>No login required. Disable by setting `VITE_DEV_NO_AUTH=false` and restarting `npm run dev`.</p>
+        </div>
+      ) : null}
 
       <section className="workspace-showcase workspace-showcase-live">
         <div className="workspace-frame">
