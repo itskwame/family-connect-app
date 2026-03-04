@@ -1,10 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import './App.css'
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabase'
 
 type Route = 'landing' | 'signup' | 'login' | 'family' | 'onboarding' | 'workspace'
-type WorkspaceView = 'home' | 'tree' | 'messages' | 'profile'
+type WorkspaceView = 'home' | 'tree' | 'messages' | 'profile' | 'businesses'
 type CandidateProfile = {
   id: string
   first_name: string
@@ -28,6 +28,7 @@ type ProfileRecord = {
   contact_phone: string | null
   profile_photo_url: string | null
   business_name: string | null
+  business_logo_url: string | null
   business_category: string | null
   business_description: string | null
   business_city: string | null
@@ -53,8 +54,37 @@ type MediaItem = {
   media_url: string
   caption: string | null
 }
+type PersonOption = {
+  id: string
+  name: string
+}
+type ConversationListItem = {
+  id: string
+  type: 'direct' | 'group' | 'family'
+  title: string
+  participantIds: string[]
+  preview: string
+}
+type MessageItem = {
+  id: string
+  sender_person_id: string
+  content: string
+  media_url: string | null
+  created_at: string
+}
+type BusinessDirectoryItem = {
+  id: string
+  ownerName: string
+  businessName: string
+  businessLogoUrl: string | null
+  businessCategory: string | null
+  businessDescription: string | null
+  businessCity: string | null
+  businessState: string | null
+  businessWebsite: string | null
+}
 
-const workspaceViews: WorkspaceView[] = ['home', 'tree', 'messages', 'profile']
+const workspaceViews: WorkspaceView[] = ['home', 'tree', 'messages', 'profile', 'businesses']
 const FAMILY_ID_STORAGE_KEY = 'family-connect.current-family-id'
 const FAMILY_NAME_STORAGE_KEY = 'family-connect.current-family-name'
 const PERSON_ID_STORAGE_KEY = 'family-connect.current-person-id'
@@ -130,6 +160,7 @@ function buildProfileForm(record: ProfileRecord) {
     contactEmail: record.contact_email ?? '',
     contactPhone: record.contact_phone ?? '',
     businessName: record.business_name ?? '',
+    businessLogoUrl: record.business_logo_url ?? '',
     businessCategory: record.business_category ?? '',
     businessDescription: record.business_description ?? '',
     businessCity: record.business_city ?? '',
@@ -167,6 +198,22 @@ function App() {
   const [profileMode, setProfileMode] = useState<'idle' | 'loading' | 'saving'>('idle')
   const [profileTab, setProfileTab] = useState<ProfileTab>('overview')
   const [profileError, setProfileError] = useState('')
+  const [businessDirectoryMode, setBusinessDirectoryMode] = useState<'idle' | 'loading'>('idle')
+  const [businessDirectoryError, setBusinessDirectoryError] = useState('')
+  const [businessSearch, setBusinessSearch] = useState('')
+  const [businessCategoryFilter, setBusinessCategoryFilter] = useState('All')
+  const [businessStateFilter, setBusinessStateFilter] = useState('All')
+  const [selectedBusinessId, setSelectedBusinessId] = useState('')
+  const [businessDirectoryItems, setBusinessDirectoryItems] = useState<BusinessDirectoryItem[]>([])
+  const [messagingMode, setMessagingMode] = useState<'idle' | 'loading' | 'sending' | 'creating'>('idle')
+  const [messagingError, setMessagingError] = useState('')
+  const [peopleOptions, setPeopleOptions] = useState<PersonOption[]>([])
+  const [conversations, setConversations] = useState<ConversationListItem[]>([])
+  const [selectedConversationId, setSelectedConversationId] = useState('')
+  const [messages, setMessages] = useState<MessageItem[]>([])
+  const [messageDraft, setMessageDraft] = useState({ content: '', mediaUrl: '' })
+  const [newConversationType, setNewConversationType] = useState<'direct' | 'group'>('direct')
+  const [newConversationParticipantIds, setNewConversationParticipantIds] = useState<string[]>([])
   const [isEditingProfile, setIsEditingProfile] = useState(false)
   const [profileRecord, setProfileRecord] = useState<ProfileRecord | null>(null)
   const [connections, setConnections] = useState<ConnectionItem[]>([])
@@ -194,6 +241,7 @@ function App() {
     contactEmail: '',
     contactPhone: '',
     businessName: '',
+    businessLogoUrl: '',
     businessCategory: '',
     businessDescription: '',
     businessCity: '',
@@ -398,7 +446,7 @@ function App() {
     void client
       .from('people')
       .select(
-        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
+        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
       )
       .eq('id', currentPersonId)
       .maybeSingle()
@@ -559,6 +607,353 @@ function App() {
   }, [currentFamilyId, currentPersonId, isAuthenticated])
 
   useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId) {
+      setBusinessDirectoryItems([])
+      setSelectedBusinessId('')
+      return
+    }
+
+    let active = true
+    setBusinessDirectoryMode('loading')
+    setBusinessDirectoryError('')
+
+    void client
+      .from('people')
+      .select(
+        'id, first_name, last_name, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website'
+      )
+      .eq('family_id', currentFamilyId)
+      .not('business_name', 'is', null)
+      .then(({ data, error }) => {
+        if (!active) {
+          return
+        }
+
+        setBusinessDirectoryMode('idle')
+
+        if (error) {
+          setBusinessDirectoryError(error.message)
+          return
+        }
+
+        const items = (data ?? [])
+          .filter((row) => (row.business_name ?? '').trim() !== '')
+          .map((row) => ({
+            id: row.id,
+            ownerName: `${row.first_name} ${row.last_name}`.trim(),
+            businessName: row.business_name ?? '',
+            businessLogoUrl: row.business_logo_url ?? null,
+            businessCategory: row.business_category ?? null,
+            businessDescription: row.business_description ?? null,
+            businessCity: row.business_city ?? null,
+            businessState: row.business_state ?? null,
+            businessWebsite: row.business_website ?? null,
+          }))
+
+        setBusinessDirectoryItems(items)
+        setSelectedBusinessId((current) => (current && items.some((item) => item.id === current) ? current : items[0]?.id ?? ''))
+      })
+
+    return () => {
+      active = false
+    }
+  }, [currentFamilyId, isAuthenticated])
+
+  const businessCategoryOptions = useMemo(
+    () => ['All', ...Array.from(new Set(businessDirectoryItems.map((item) => item.businessCategory).filter(Boolean) as string[])).sort()],
+    [businessDirectoryItems]
+  )
+
+  const businessStateOptions = useMemo(
+    () => ['All', ...Array.from(new Set(businessDirectoryItems.map((item) => item.businessState).filter(Boolean) as string[])).sort()],
+    [businessDirectoryItems]
+  )
+
+  const filteredBusinessDirectoryItems = useMemo(() => {
+    const normalizedSearch = businessSearch.trim().toLowerCase()
+
+    return businessDirectoryItems.filter((item) => {
+      const matchesSearch =
+        normalizedSearch === '' ||
+        item.businessName.toLowerCase().includes(normalizedSearch) ||
+        item.ownerName.toLowerCase().includes(normalizedSearch)
+
+      const matchesCategory =
+        businessCategoryFilter === 'All' || item.businessCategory === businessCategoryFilter
+
+      const matchesState = businessStateFilter === 'All' || item.businessState === businessStateFilter
+
+      return matchesSearch && matchesCategory && matchesState
+    })
+  }, [businessCategoryFilter, businessDirectoryItems, businessSearch, businessStateFilter])
+
+  const selectedBusiness =
+    filteredBusinessDirectoryItems.find((item) => item.id === selectedBusinessId) ??
+    filteredBusinessDirectoryItems[0] ??
+    null
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !currentFamilyId || !currentPersonId) {
+      setPeopleOptions([])
+      setConversations([])
+      setSelectedConversationId('')
+      return
+    }
+
+    let active = true
+    setMessagingMode('loading')
+    setMessagingError('')
+
+    void (async () => {
+      const peopleResponse = await client
+        .from('people')
+        .select('id, first_name, last_name')
+        .eq('family_id', currentFamilyId)
+
+      if (!active) {
+        return
+      }
+
+      if (peopleResponse.error) {
+        setMessagingMode('idle')
+        setMessagingError(peopleResponse.error.message)
+        return
+      }
+
+      const people = (peopleResponse.data ?? []).map((person) => ({
+        id: person.id,
+        name: `${person.first_name} ${person.last_name}`.trim(),
+      }))
+      const peopleLookup = new Map(people.map((person) => [person.id, person.name]))
+      setPeopleOptions(people.filter((person) => person.id !== currentPersonId))
+
+      let familyConversationId = ''
+      const familyChatResponse = await client
+        .from('conversations')
+        .select('id')
+        .eq('family_id', currentFamilyId)
+        .eq('type', 'family')
+        .maybeSingle()
+
+      if (!active) {
+        return
+      }
+
+      if (familyChatResponse.error) {
+        setMessagingMode('idle')
+        setMessagingError(familyChatResponse.error.message)
+        return
+      }
+
+      if (familyChatResponse.data?.id) {
+        familyConversationId = familyChatResponse.data.id
+      } else {
+        const createdFamilyChat = await client
+          .from('conversations')
+          .insert({
+            family_id: currentFamilyId,
+            type: 'family',
+          })
+          .select('id')
+          .single()
+
+        if (!active) {
+          return
+        }
+
+        if (createdFamilyChat.error) {
+          setMessagingMode('idle')
+          setMessagingError(createdFamilyChat.error.message)
+          return
+        }
+
+        familyConversationId = createdFamilyChat.data.id
+      }
+
+      const conversationsResponse = await client
+        .from('conversations')
+        .select('id, type, created_at')
+        .eq('family_id', currentFamilyId)
+        .order('created_at', { ascending: false })
+
+      if (!active) {
+        return
+      }
+
+      if (conversationsResponse.error) {
+        setMessagingMode('idle')
+        setMessagingError(conversationsResponse.error.message)
+        return
+      }
+
+      const conversationRows = conversationsResponse.data ?? []
+      const conversationIds = conversationRows.map((conversation) => conversation.id)
+
+      const [participantsResponse, lastMessagesResponse] = await Promise.all([
+        conversationIds.length > 0
+          ? client
+              .from('conversation_participants')
+              .select('conversation_id, person_id')
+              .in('conversation_id', conversationIds)
+          : Promise.resolve({ data: [], error: null }),
+        conversationIds.length > 0
+          ? client
+              .from('messages')
+              .select('id, conversation_id, content, media_url, created_at')
+              .in('conversation_id', conversationIds)
+              .order('created_at', { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+      ])
+
+      if (!active) {
+        return
+      }
+
+      if (participantsResponse.error) {
+        setMessagingMode('idle')
+        setMessagingError(participantsResponse.error.message)
+        return
+      }
+
+      if (lastMessagesResponse.error) {
+        setMessagingMode('idle')
+        setMessagingError(lastMessagesResponse.error.message)
+        return
+      }
+
+      const participantsByConversation = new Map<string, string[]>()
+      for (const row of participantsResponse.data ?? []) {
+        const current = participantsByConversation.get(row.conversation_id) ?? []
+        current.push(row.person_id)
+        participantsByConversation.set(row.conversation_id, current)
+      }
+
+      const previewByConversation = new Map<string, string>()
+      for (const row of lastMessagesResponse.data ?? []) {
+        if (!previewByConversation.has(row.conversation_id)) {
+          previewByConversation.set(
+            row.conversation_id,
+            row.content.trim() || (row.media_url ? 'Media attachment' : 'No messages yet.')
+          )
+        }
+      }
+
+      const builtConversations = conversationRows.map((conversation) => {
+        const participantIds = participantsByConversation.get(conversation.id) ?? []
+        const otherParticipantNames = participantIds
+          .filter((id) => id !== currentPersonId)
+          .map((id) => peopleLookup.get(id) ?? 'Unknown person')
+
+        let title = 'Conversation'
+
+        if (conversation.type === 'family') {
+          title = 'Family Chat'
+        } else if (conversation.type === 'direct') {
+          title = otherParticipantNames[0] ?? 'Direct Chat'
+        } else {
+          title = otherParticipantNames.length > 0 ? otherParticipantNames.join(', ') : 'Group Chat'
+        }
+
+        return {
+          id: conversation.id,
+          type: conversation.type,
+          title,
+          participantIds,
+          preview: previewByConversation.get(conversation.id) ?? 'No messages yet.',
+        } as ConversationListItem
+      })
+
+      builtConversations.sort((left, right) => {
+        if (left.id === familyConversationId) return -1
+        if (right.id === familyConversationId) return 1
+        return 0
+      })
+
+      setConversations(builtConversations)
+      setSelectedConversationId((current) =>
+        current && builtConversations.some((conversation) => conversation.id === current)
+          ? current
+          : familyConversationId || builtConversations[0]?.id || ''
+      )
+      setMessagingMode('idle')
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [currentFamilyId, currentPersonId, isAuthenticated])
+
+  useEffect(() => {
+    const client = getSupabaseClient()
+
+    if (!client || !isAuthenticated || !selectedConversationId) {
+      setMessages([])
+      return
+    }
+
+    let active = true
+    setMessagingMode((current) => (current === 'idle' ? 'loading' : current))
+
+    void client
+      .from('messages')
+      .select('id, sender_person_id, content, media_url, created_at')
+      .eq('conversation_id', selectedConversationId)
+      .order('created_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (!active) {
+          return
+        }
+
+        if (error) {
+          setMessagingMode('idle')
+          setMessagingError(error.message)
+          return
+        }
+
+        setMessages((data ?? []) as MessageItem[])
+        setMessagingMode('idle')
+      })
+
+    const channel = client
+      .channel(`messages:${selectedConversationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `conversation_id=eq.${selectedConversationId}`,
+        },
+        (payload) => {
+          const nextMessage = payload.new as MessageItem
+          setMessages((current) =>
+            current.some((message) => message.id === nextMessage.id) ? current : [...current, nextMessage]
+          )
+          setConversations((current) =>
+            current.map((conversation) =>
+              conversation.id === selectedConversationId
+                ? {
+                    ...conversation,
+                    preview: nextMessage.content.trim() || (nextMessage.media_url ? 'Media attachment' : 'No messages yet.'),
+                  }
+                : conversation
+            )
+          )
+        }
+      )
+      .subscribe()
+
+    return () => {
+      active = false
+      void client.removeChannel(channel)
+    }
+  }, [isAuthenticated, selectedConversationId])
+
+  useEffect(() => {
     if (currentPersonId) {
       localStorage.setItem(PERSON_ID_STORAGE_KEY, currentPersonId)
     } else {
@@ -636,6 +1031,17 @@ function App() {
   const updateMediaDraft = (field: keyof typeof mediaDraft, value: string) => {
     resetProfileFeedback()
     setMediaDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  const resetMessagingFeedback = () => {
+    setMessagingError('')
+  }
+
+  const toggleConversationParticipant = (personId: string) => {
+    resetMessagingFeedback()
+    setNewConversationParticipantIds((current) =>
+      current.includes(personId) ? current.filter((id) => id !== personId) : [...current, personId]
+    )
   }
 
   const handlePhotoSelection = (file: File | null) => {
@@ -1299,6 +1705,7 @@ function App() {
         contact_email: profileForm.contactEmail.trim() || null,
         contact_phone: profileForm.contactPhone.trim() || null,
         business_name: profileForm.businessName.trim() || null,
+        business_logo_url: profileForm.businessLogoUrl.trim() || null,
         business_category: profileForm.businessCategory.trim() || null,
         business_description: profileForm.businessDescription.trim() || null,
         business_city: profileForm.businessCity.trim() || null,
@@ -1309,7 +1716,7 @@ function App() {
       })
       .eq('id', currentPersonId)
       .select(
-        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
+        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
       )
       .single()
 
@@ -1439,6 +1846,127 @@ function App() {
 
     setMediaItems((current) => [data as MediaItem, ...current])
     setMediaDraft({ mediaUrl: '', caption: '' })
+  }
+
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!selectedConversationId || !currentPersonId) {
+      setMessagingError('Select a conversation before sending a message.')
+      return
+    }
+
+    if (messageDraft.content.trim() === '' && messageDraft.mediaUrl.trim() === '') {
+      setMessagingError('Add message text or a media URL before sending.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setMessagingError('Supabase is not configured. Messaging requires a live client.')
+      return
+    }
+
+    setMessagingMode('sending')
+    resetMessagingFeedback()
+
+    const { error } = await client.from('messages').insert({
+      conversation_id: selectedConversationId,
+      sender_person_id: currentPersonId,
+      content: messageDraft.content.trim(),
+      media_url: messageDraft.mediaUrl.trim() || null,
+    })
+
+    setMessagingMode('idle')
+
+    if (error) {
+      setMessagingError(error.message)
+      return
+    }
+
+    setMessageDraft({ content: '', mediaUrl: '' })
+  }
+
+  const handleCreateConversation = async () => {
+    if (!currentFamilyId || !currentPersonId) {
+      setMessagingError('A family and active profile are required to create a conversation.')
+      return
+    }
+
+    const participantIds = Array.from(new Set([currentPersonId, ...newConversationParticipantIds]))
+
+    if (participantIds.length < 2) {
+      setMessagingError('Choose at least one other participant.')
+      return
+    }
+
+    if (newConversationType === 'direct' && participantIds.length !== 2) {
+      setMessagingError('Direct chats can only have one other participant.')
+      return
+    }
+
+    const client = getSupabaseClient()
+
+    if (!client) {
+      setMessagingError('Supabase is not configured. Conversation creation requires a live client.')
+      return
+    }
+
+    setMessagingMode('creating')
+    resetMessagingFeedback()
+
+    const { data: conversation, error: conversationError } = await client
+      .from('conversations')
+      .insert({
+        family_id: currentFamilyId,
+        type: newConversationType,
+      })
+      .select('id')
+      .single()
+
+    if (conversationError) {
+      setMessagingMode('idle')
+      setMessagingError(conversationError.message)
+      return
+    }
+
+    const { error: participantsError } = await client.from('conversation_participants').insert(
+      participantIds.map((personId) => ({
+        conversation_id: conversation.id,
+        person_id: personId,
+      }))
+    )
+
+    setMessagingMode('idle')
+
+    if (participantsError) {
+      setMessagingError(participantsError.message)
+      return
+    }
+
+    const nameLookup = new Map(peopleOptions.map((person) => [person.id, person.name]))
+    const otherNames = participantIds
+      .filter((personId) => personId !== currentPersonId)
+      .map((personId) => nameLookup.get(personId) ?? 'Unknown person')
+
+    const newConversation: ConversationListItem = {
+      id: conversation.id,
+      type: newConversationType,
+      title:
+        newConversationType === 'direct'
+          ? otherNames[0] ?? 'Direct Chat'
+          : otherNames.length > 0
+            ? otherNames.join(', ')
+            : 'Group Chat',
+      participantIds,
+      preview: 'No messages yet.',
+    }
+
+    setConversations((current) => [newConversation, ...current])
+    setSelectedConversationId(conversation.id)
+    setNewConversationParticipantIds([])
+    setNewConversationType('direct')
   }
 
   const renderLanding = () => (
@@ -2015,7 +2543,286 @@ function App() {
               ))}
             </nav>
             <div className="workspace-content">
-              {workspaceView === 'profile' ? (
+              {workspaceView === 'messages' ? (
+                <section className="workspace-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Messaging</p>
+                      <h2>Realtime family conversations</h2>
+                      <p className="panel-copy">
+                        Family chat, direct chats, and group chats are now backed by Supabase tables.
+                      </p>
+                    </div>
+                  </div>
+                  {messagingError ? (
+                    <div className="error-callout" role="alert">
+                      <strong>Messaging error</strong>
+                      <p>{messagingError}</p>
+                    </div>
+                  ) : null}
+                  <div className="chat-layout">
+                    <aside className="card conversation-list">
+                      <div className="form-card">
+                        <p className="eyebrow">New Conversation</p>
+                        <label>
+                          Type
+                          <select
+                            className="text-input"
+                            onChange={(event) =>
+                              setNewConversationType(event.target.value as 'direct' | 'group')
+                            }
+                            value={newConversationType}
+                          >
+                            <option value="direct">Direct</option>
+                            <option value="group">Group</option>
+                          </select>
+                        </label>
+                        <div className="participant-picker">
+                          {peopleOptions.map((person) => (
+                            <label className="checkbox-row" key={person.id}>
+                              <input
+                                checked={newConversationParticipantIds.includes(person.id)}
+                                onChange={() => toggleConversationParticipant(person.id)}
+                                type="checkbox"
+                              />
+                              <span>{person.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                        <button
+                          className="primary-button wide-button"
+                          disabled={messagingMode === 'creating'}
+                          onClick={() => void handleCreateConversation()}
+                          type="button"
+                        >
+                          {messagingMode === 'creating' ? 'Creating...' : 'Start chat'}
+                        </button>
+                      </div>
+                      <div className="conversation-stack">
+                        {conversations.map((conversation) => (
+                          <button
+                            className={`conversation-item ${
+                              selectedConversationId === conversation.id ? 'conversation-item-active' : ''
+                            }`}
+                            key={conversation.id}
+                            onClick={() => setSelectedConversationId(conversation.id)}
+                            type="button"
+                          >
+                            <div className="avatar-badge">{conversation.title.slice(0, 1).toUpperCase()}</div>
+                            <div>
+                              <strong>{conversation.title}</strong>
+                              <p>{conversation.preview}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </aside>
+                    <div className="card chat-window">
+                      <div className="chat-header">
+                        {conversations.find((conversation) => conversation.id === selectedConversationId)?.title ||
+                          'Select a conversation'}
+                      </div>
+                      <div className="message-list">
+                        {messages.length > 0 ? (
+                          messages.map((message) => {
+                            const isMine = message.sender_person_id === currentPersonId
+                            const senderName =
+                              isMine ||
+                              !message.sender_person_id
+                                ? currentPersonName || 'You'
+                                : peopleOptions.find((person) => person.id === message.sender_person_id)?.name ||
+                                  'Family member'
+
+                            return (
+                              <div
+                                className={`message-bubble ${
+                                  isMine ? 'message-bubble-me' : 'message-bubble-other'
+                                }`}
+                                key={message.id}
+                              >
+                                <strong>{senderName}</strong>
+                                {message.content ? <div>{message.content}</div> : null}
+                                {message.media_url ? (
+                                  <a href={message.media_url} rel="noreferrer" target="_blank">
+                                    {message.media_url}
+                                  </a>
+                                ) : null}
+                              </div>
+                            )
+                          })
+                        ) : (
+                          <p className="muted-text">No messages yet in this conversation.</p>
+                        )}
+                      </div>
+                      <form className="chat-composer-column" onSubmit={(event) => void handleSendMessage(event)}>
+                        <input
+                          className="text-input"
+                          onChange={(event) =>
+                            setMessageDraft((current) => ({ ...current, content: event.target.value }))
+                          }
+                          placeholder="Type a message"
+                          type="text"
+                          value={messageDraft.content}
+                        />
+                        <input
+                          className="text-input"
+                          onChange={(event) =>
+                            setMessageDraft((current) => ({ ...current, mediaUrl: event.target.value }))
+                          }
+                          placeholder="Optional media URL"
+                          type="url"
+                          value={messageDraft.mediaUrl}
+                        />
+                        <button
+                          className="primary-button"
+                          disabled={messagingMode === 'sending' || selectedConversationId === ''}
+                          type="submit"
+                        >
+                          {messagingMode === 'sending' ? 'Sending...' : 'Send'}
+                        </button>
+                      </form>
+                    </div>
+                  </div>
+                </section>
+              ) : workspaceView === 'businesses' ? (
+                <section className="workspace-panel">
+                  <div className="panel-header">
+                    <div>
+                      <p className="eyebrow">Business Directory</p>
+                      <h2>Family-owned businesses</h2>
+                      <p className="panel-copy">
+                        Directory data is now loaded from profile business fields on `people`.
+                      </p>
+                    </div>
+                  </div>
+                  {businessDirectoryError ? (
+                    <div className="error-callout" role="alert">
+                      <strong>Business directory error</strong>
+                      <p>{businessDirectoryError}</p>
+                    </div>
+                  ) : null}
+                  <div className="dashboard-grid">
+                    <div className="card form-card">
+                      <label>
+                        Search
+                        <input
+                          className="text-input"
+                          onChange={(event) => setBusinessSearch(event.target.value)}
+                          placeholder="Search owner or business"
+                          type="text"
+                          value={businessSearch}
+                        />
+                      </label>
+                      <label>
+                        Category
+                        <select
+                          className="text-input"
+                          onChange={(event) => setBusinessCategoryFilter(event.target.value)}
+                          value={businessCategoryFilter}
+                        >
+                          {businessCategoryOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        State
+                        <select
+                          className="text-input"
+                          onChange={(event) => setBusinessStateFilter(event.target.value)}
+                          value={businessStateFilter}
+                        >
+                          {businessStateOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="status-callout">
+                        <strong>Results</strong>
+                        <p>
+                          {businessDirectoryMode === 'loading'
+                            ? 'Loading businesses...'
+                            : `${filteredBusinessDirectoryItems.length} business${
+                                filteredBusinessDirectoryItems.length === 1 ? '' : 'es'
+                              } found`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="card">
+                      <p className="eyebrow">Selected Business</p>
+                      {selectedBusiness ? (
+                        <div className="business-detail">
+                          <div className="business-detail-header">
+                            <div className="business-logo-badge">
+                              {selectedBusiness.businessLogoUrl ? (
+                                <img alt={selectedBusiness.businessName} src={selectedBusiness.businessLogoUrl} />
+                              ) : (
+                                selectedBusiness.businessName.slice(0, 1).toUpperCase()
+                              )}
+                            </div>
+                            <div>
+                              <h3>{selectedBusiness.businessName}</h3>
+                              <p className="muted-text">{selectedBusiness.ownerName}</p>
+                            </div>
+                          </div>
+                          <ul className="stack-list">
+                            <li>Category: {selectedBusiness.businessCategory || 'Not set'}</li>
+                            <li>
+                              Location:{' '}
+                              {[selectedBusiness.businessCity, selectedBusiness.businessState]
+                                .filter(Boolean)
+                                .join(', ') || 'Not set'}
+                            </li>
+                            <li>Website: {selectedBusiness.businessWebsite || 'Not set'}</li>
+                          </ul>
+                          {selectedBusiness.businessDescription ? (
+                            <p>{selectedBusiness.businessDescription}</p>
+                          ) : (
+                            <p className="muted-text">No business description yet.</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="muted-text">No businesses match the current filters.</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="business-directory-grid">
+                    {filteredBusinessDirectoryItems.map((item) => (
+                      <button
+                        className={`card business-directory-card ${
+                          selectedBusiness?.id === item.id ? 'business-directory-card-active' : ''
+                        }`}
+                        key={item.id}
+                        onClick={() => setSelectedBusinessId(item.id)}
+                        type="button"
+                      >
+                        <div className="business-directory-card-top">
+                          <div className="business-logo-badge">
+                            {item.businessLogoUrl ? (
+                              <img alt={item.businessName} src={item.businessLogoUrl} />
+                            ) : (
+                              item.businessName.slice(0, 1).toUpperCase()
+                            )}
+                          </div>
+                          <div>
+                            <strong>{item.businessName}</strong>
+                            <p className="muted-text">{item.ownerName}</p>
+                          </div>
+                        </div>
+                        <p className="muted-text">
+                          {[item.businessCity, item.businessState].filter(Boolean).join(', ') || 'Location not set'}
+                        </p>
+                        <p>{item.businessDescription || 'No description yet.'}</p>
+                        <span className="chip">{item.businessCategory || 'Uncategorized'}</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : workspaceView === 'profile' ? (
                 <section className="workspace-panel">
                   {profileMode === 'loading' ? (
                     <div className="card">
@@ -2189,6 +2996,15 @@ function App() {
                                 onChange={(event) => updateProfileField('businessName', event.target.value)}
                                 type="text"
                                 value={profileForm.businessName}
+                              />
+                            </label>
+                            <label>
+                              Business logo URL
+                              <input
+                                className="text-input"
+                                onChange={(event) => updateProfileField('businessLogoUrl', event.target.value)}
+                                type="url"
+                                value={profileForm.businessLogoUrl}
                               />
                             </label>
                             <label>
@@ -2412,6 +3228,7 @@ function App() {
                               <p className="eyebrow">Business</p>
                               <ul className="stack-list">
                                 <li>Business name: {profileRecord.business_name || 'Not set'}</li>
+                                <li>Logo URL: {profileRecord.business_logo_url || 'Not set'}</li>
                                 <li>Category: {profileRecord.business_category || 'Not set'}</li>
                                 <li>Website: {profileRecord.business_website || 'Not set'}</li>
                                 <li>

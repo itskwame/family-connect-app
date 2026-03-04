@@ -557,6 +557,74 @@
   font-size: 0.9rem;
 }
 
+.business-directory-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.business-directory-card {
+  display: grid;
+  gap: 0.75rem;
+  text-align: left;
+  border: 1px solid var(--color-border);
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.business-directory-card-active {
+  border-color: rgba(47, 184, 163, 0.35);
+  box-shadow: 0 0 0 3px rgba(47, 184, 163, 0.08);
+}
+
+.business-directory-card-top,
+.business-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.business-logo-badge {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: rgba(31, 42, 68, 0.08);
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.business-logo-badge img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.business-detail {
+  display: grid;
+  gap: 1rem;
+}
+
+.participant-picker,
+.conversation-stack,
+.chat-composer-column {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.conversation-item-active {
+  border-color: rgba(47, 184, 163, 0.35);
+  background: rgba(47, 184, 163, 0.08);
+}
+
 .workspace-frame {
   overflow: hidden;
 }
@@ -1037,6 +1105,10 @@
   }
 
   .media-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .business-directory-grid {
     grid-template-columns: 1fr;
   }
 
