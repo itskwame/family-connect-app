@@ -1,11 +1,12 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import dagre from 'dagre'
-import type { Edge as FlowEdge, Node as FlowNode, ReactFlowInstance } from 'reactflow'
+import type { Node as FlowNode, ReactFlowInstance } from 'reactflow'
 import './App.css'
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabase'
+import { layoutTree } from './lib/layoutTree'
+import { buildTreeGraphModel, buildTreeSvgFromLayout } from './lib/treeGraphModel'
 
-const TreeCanvas = lazy(() => import('./views/TreeCanvas'))
+const TreeGraph = lazy(() => import('./views/TreeGraph'))
 const PathfinderWorkspace = lazy(() => import('./views/PathfinderWorkspace'))
 const MapWorkspace = lazy(() => import('./views/MapWorkspace'))
 
@@ -254,15 +255,6 @@ function normalizeName(value: string) {
 
 function isParentRelationshipType(value: string) {
   return value === 'parent' || value === 'step_parent' || value === 'adopted_parent'
-}
-
-function escapeSvgText(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
 }
 
 function isSamePersonName(
@@ -1056,6 +1048,7 @@ function App() {
   const [treeBranchFilter, setTreeBranchFilter] = useState<'both' | 'maternal' | 'paternal'>('both')
   const [showAddRelationship, setShowAddRelationship] = useState(false)
   const [treeFlowInstance, setTreeFlowInstance] = useState<ReactFlowInstance | null>(null)
+  const [treeRenderNodes, setTreeRenderNodes] = useState<FlowNode[]>([])
   const [collapsedTreeSections, setCollapsedTreeSections] = useState<TreeCollapseState>({
     ancestors: false,
     descendants: false,
@@ -1097,6 +1090,13 @@ function App() {
   })
   const [exportMode, setExportMode] = useState<'idle' | 'exporting'>('idle')
   const [exportError, setExportError] = useState('')
+  const [exportGraph, setExportGraph] = useState<{
+    svgMarkup: string
+    width: number
+    height: number
+    warning: string
+    nodeCount: number
+  } | null>(null)
   const [exportRootId, setExportRootId] = useState('')
   const [exportDirection, setExportDirection] = useState<'ancestors' | 'descendants' | 'both'>('both')
   const [exportBranch, setExportBranch] = useState<'both' | 'maternal' | 'paternal'>('both')
@@ -2143,718 +2143,223 @@ function App() {
     exportTemplateId,
   ])
 
-  const selectedTreeGraph = useMemo(() => {
+  const visibleTreePersonIds = useMemo(() => {
     if (!selectedTreePerson) {
-      return { nodes: [] as FlowNode[], edges: [] as FlowEdge[] }
+      return [] as string[]
     }
 
-    if (highlightedTreePath && highlightedTreePath.pathPersonIds.length > 1) {
-      const graph = new dagre.graphlib.Graph()
-      graph.setGraph({
-        rankdir: 'LR',
-        ranksep: 90,
-        nodesep: 36,
-        marginx: 24,
-        marginy: 24,
-      })
-      graph.setDefaultEdgeLabel(() => ({}))
+    const ids = new Set<string>([selectedTreePerson.id])
 
-      const pathNodes: FlowNode[] = highlightedTreePath.pathPersonIds
+    if (!collapsedTreeSections.ancestors) {
+      selectedTreeConnections.parents.forEach(({ person }) => ids.add(person.id))
+      selectedTreeConnections.grandparents.forEach(({ person }) => ids.add(person.id))
+    }
+
+    if (!collapsedTreeSections.descendants) {
+      selectedTreeConnections.children.forEach(({ person }) => ids.add(person.id))
+      selectedTreeConnections.grandchildren.forEach(({ person }) => ids.add(person.id))
+    }
+
+    if (!collapsedTreeSections.spouses) {
+      selectedTreeConnections.spouses.forEach((person) => ids.add(person.id))
+    }
+
+    if (!collapsedTreeSections.siblings) {
+      selectedTreeConnections.siblings.forEach((person) => ids.add(person.id))
+    }
+
+    return Array.from(ids)
+  }, [collapsedTreeSections, selectedTreeConnections, selectedTreePerson])
+
+  useEffect(() => {
+    let active = true
+
+    const run = async () => {
+      const rootPerson = treePeopleLookup.get(exportRootId)
+
+      if (!rootPerson) {
+        if (active) {
+          setExportGraph(null)
+        }
+        return
+      }
+
+      const personIds = new Set<string>([rootPerson.id])
+
+      const enqueueAncestors = (startId: string, depth: number) => {
+        if (depth >= exportGenerations) {
+          return
+        }
+
+        const parentEdges = treeRelationships.filter(
+          (relationship) =>
+            relationship.person_b_id === startId && isParentRelationshipType(relationship.relationship_type)
+        )
+
+        const filteredParentEdges =
+          depth === 0 && exportBranch !== 'both'
+            ? parentEdges.filter((relationship) => {
+                const parent = treePeopleLookup.get(relationship.person_a_id)
+                const normalizedGender = (parent?.gender ?? '').toLowerCase()
+
+                if (exportBranch === 'maternal') {
+                  return normalizedGender.startsWith('f')
+                }
+
+                return normalizedGender.startsWith('m')
+              })
+            : parentEdges
+
+        for (const relationship of filteredParentEdges) {
+          personIds.add(relationship.person_a_id)
+          enqueueAncestors(relationship.person_a_id, depth + 1)
+        }
+      }
+
+      const enqueueDescendants = (startId: string, depth: number) => {
+        if (depth >= exportGenerations) {
+          return
+        }
+
+        const childEdges = treeRelationships.filter(
+          (relationship) =>
+            relationship.person_a_id === startId && isParentRelationshipType(relationship.relationship_type)
+        )
+
+        for (const relationship of childEdges) {
+          personIds.add(relationship.person_b_id)
+          enqueueDescendants(relationship.person_b_id, depth + 1)
+        }
+      }
+
+      if (exportDirection === 'ancestors' || exportDirection === 'both') {
+        enqueueAncestors(rootPerson.id, 0)
+      }
+
+      if (exportDirection === 'descendants' || exportDirection === 'both') {
+        enqueueDescendants(rootPerson.id, 0)
+      }
+
+      const includedSiblingIds = new Set<string>()
+
+      if (exportIncludeSiblings) {
+        for (const relationship of treeRelationships) {
+          if (
+            relationship.relationship_type === 'sibling' &&
+            (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
+          ) {
+            personIds.add(relationship.person_a_id)
+            personIds.add(relationship.person_b_id)
+            includedSiblingIds.add(relationship.person_a_id)
+            includedSiblingIds.add(relationship.person_b_id)
+          }
+        }
+      }
+
+      if (exportIncludeParentsOfSiblings) {
+        for (const relationship of treeRelationships) {
+          if (
+            isParentRelationshipType(relationship.relationship_type) &&
+            includedSiblingIds.has(relationship.person_b_id)
+          ) {
+            personIds.add(relationship.person_a_id)
+            personIds.add(relationship.person_b_id)
+          }
+        }
+      }
+
+      if (exportIncludeSpouses) {
+        for (const relationship of treeRelationships) {
+          if (
+            relationship.relationship_type === 'spouse' &&
+            (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
+          ) {
+            personIds.add(relationship.person_a_id)
+            personIds.add(relationship.person_b_id)
+          }
+        }
+      }
+
+      if (exportIncludeSiblingSpouses) {
+        for (const relationship of treeRelationships) {
+          if (
+            relationship.relationship_type === 'spouse' &&
+            (includedSiblingIds.has(relationship.person_a_id) || includedSiblingIds.has(relationship.person_b_id))
+          ) {
+            personIds.add(relationship.person_a_id)
+            personIds.add(relationship.person_b_id)
+          }
+        }
+      }
+
+      if (exportIncludeChildrenOfSiblings) {
+        for (const relationship of treeRelationships) {
+          if (
+            isParentRelationshipType(relationship.relationship_type) &&
+            includedSiblingIds.has(relationship.person_a_id)
+          ) {
+            personIds.add(relationship.person_a_id)
+            personIds.add(relationship.person_b_id)
+          }
+        }
+      }
+
+      const exportPeople = Array.from(personIds)
         .map((personId) => treePeopleLookup.get(personId))
         .filter((person): person is TreePersonItem => Boolean(person))
-        .map((person) => {
-          const title = `${person.first_name} ${person.last_name}`.trim()
-          const subtitle =
-            [person.city, person.state].filter(Boolean).join(', ') || person.birth_date || 'No details yet'
 
-          graph.setNode(person.id, { width: 190, height: 118 })
-
-          return {
-            id: person.id,
-            position: { x: 0, y: 0 },
-            sourcePosition: 'right' as FlowNode['sourcePosition'],
-            targetPosition: 'left' as FlowNode['targetPosition'],
-            draggable: false,
-            selectable: true,
-            data: {
-              label: (
-                <div className="tree-flow-node tree-flow-node-highlighted">
-                  <div className="node-avatar">{person.first_name.slice(0, 1).toUpperCase()}</div>
-                  <strong>{title}</strong>
-                  <span>{subtitle}</span>
-                </div>
-              ),
-            },
-          } satisfies FlowNode
-        })
-
-      const pathEdges: FlowEdge[] = highlightedTreePath.steps.map((step) => {
-        graph.setEdge(step.fromId, step.toId)
-
-        return {
-          id: `path-${step.fromId}-${step.toId}`,
-          source: step.fromId,
-          target: step.toId,
-          type: 'smoothstep',
-          label: step.relationLabel,
-          animated: true,
-          markerEnd: { type: 'arrowclosed' as any },
-          style: {
-            strokeWidth: 3,
-            stroke: '#f4b942',
-          },
-          labelStyle: {
-            fill: '#9a6c00',
-            fontSize: 11,
-            fontWeight: 700,
-          },
-        }
-      })
-
-      dagre.layout(graph)
-
-      return {
-        nodes: pathNodes.map((node) => {
-          const layoutNode = graph.node(node.id)
-
-          return {
-            ...node,
-            position: {
-              x: layoutNode.x - 95,
-              y: layoutNode.y - 59,
-            },
-          }
-        }),
-        edges: pathEdges,
-      }
-    }
-
-    const graph = new dagre.graphlib.Graph()
-    graph.setGraph({
-      rankdir: 'TB',
-      ranksep: 110,
-      nodesep: 44,
-      marginx: 32,
-      marginy: 32,
-    })
-    graph.setDefaultEdgeLabel(() => ({}))
-
-    const nodeDefinitions = new Map<string, FlowNode>()
-    const edgeDefinitions = new Map<string, FlowEdge>()
-    const personNodeSize = { width: 190, height: 118 }
-    const connectorNodeSize = { width: 18, height: 18 }
-
-    const addGraphNode = (
-      id: string,
-      width: number,
-      height: number,
-      definition: Omit<FlowNode, 'position'>
-    ) => {
-      graph.setNode(id, { width, height })
-      nodeDefinitions.set(id, {
-        ...definition,
-        position: { x: 0, y: 0 },
-      })
-    }
-
-    const addNode = (person: TreePersonItem, tone: 'root' | 'parent' | 'sibling' | 'spouse' | 'child') => {
-      const title = `${person.first_name} ${person.last_name}`.trim()
-      const subtitle = [person.city, person.state].filter(Boolean).join(', ') || person.birth_date || 'No details yet'
-
-      addGraphNode(person.id, personNodeSize.width, personNodeSize.height, {
-        id: person.id,
-        sourcePosition: 'bottom' as FlowNode['sourcePosition'],
-        targetPosition: 'top' as FlowNode['targetPosition'],
-        draggable: false,
-        selectable: true,
-        data: {
-          label: (
-            <div className={`tree-flow-node tree-flow-node-${tone}`}>
-              <div className="node-avatar">{person.first_name.slice(0, 1).toUpperCase()}</div>
-              <strong>{title}</strong>
-              <span>{subtitle}</span>
-            </div>
-          ),
-        },
-      })
-    }
-
-    const addConnectorNode = (id: string) => {
-      addGraphNode(id, connectorNodeSize.width, connectorNodeSize.height, {
-        id,
-        draggable: false,
-        selectable: false,
-        sourcePosition: 'bottom' as FlowNode['sourcePosition'],
-        targetPosition: 'top' as FlowNode['targetPosition'],
-        data: {
-          label: <div className="tree-flow-connector" aria-hidden="true" />,
-        },
-      })
-    }
-
-    const addEdge = (
-      id: string,
-      source: string,
-      target: string,
-      relationshipType: 'parent' | 'step_parent' | 'adopted_parent' | 'spouse' | 'sibling'
-    ) => {
-      const isParentEdge =
-        relationshipType === 'parent' ||
-        relationshipType === 'step_parent' ||
-        relationshipType === 'adopted_parent'
-      const label =
-        relationshipType === 'step_parent'
-          ? 'step parent'
-          : relationshipType === 'adopted_parent'
-            ? 'adoptive parent'
-            : relationshipType
-
-      graph.setEdge(source, target)
-      edgeDefinitions.set(id, {
-        id,
-        source,
-        target,
-        type: relationshipType === 'spouse' ? 'straight' : 'smoothstep',
-        label,
-        animated: relationshipType === 'spouse',
-        markerEnd: isParentEdge ? { type: 'arrowclosed' as any } : undefined,
-        style:
-          relationshipType === 'spouse'
-            ? { strokeWidth: 2, stroke: '#b45309' }
-            : relationshipType === 'sibling'
-              ? { strokeWidth: 2, stroke: '#2563eb' }
-              : relationshipType === 'step_parent'
-                ? { strokeWidth: 2.5, stroke: '#7c3aed', strokeDasharray: '8 6' }
-                : relationshipType === 'adopted_parent'
-                  ? { strokeWidth: 2.5, stroke: '#059669', strokeDasharray: '4 4' }
-                  : { strokeWidth: 2.5, stroke: '#1f2937' },
-        labelStyle: { fill: '#111827', fontSize: 11, fontWeight: 600 },
-      })
-    }
-
-    addNode(selectedTreePerson, 'root')
-
-    const showAncestors = !collapsedTreeSections.ancestors
-    const showDescendants = !collapsedTreeSections.descendants
-    const showSiblings = !collapsedTreeSections.siblings
-    const showSpouses = !collapsedTreeSections.spouses
-
-    const visibleSpouses = showSpouses ? selectedTreeConnections.spouses : []
-    const visibleParents = showAncestors ? selectedTreeConnections.parents : []
-    const visibleGrandparents = showAncestors ? selectedTreeConnections.grandparents : []
-    const visibleChildren = showDescendants ? selectedTreeConnections.children : []
-    const visibleGrandchildren = showDescendants ? selectedTreeConnections.grandchildren : []
-    const visibleSiblings = showSiblings ? selectedTreeConnections.siblings : []
-
-    const familyConnectorId =
-      visibleChildren.length > 0 && visibleSpouses.length > 0 ? `family-group-${selectedTreePerson.id}` : ''
-
-    if (familyConnectorId) {
-      addConnectorNode(familyConnectorId)
-      addEdge(`family-root-${selectedTreePerson.id}`, selectedTreePerson.id, familyConnectorId, 'spouse')
-    }
-
-    visibleSpouses.forEach((person) => {
-      addNode(person, 'spouse')
-      addEdge(`spouse-${selectedTreePerson.id}-${person.id}`, selectedTreePerson.id, person.id, 'spouse')
-
-      if (familyConnectorId) {
-        addEdge(`family-spouse-${person.id}`, person.id, familyConnectorId, 'spouse')
-      }
-    })
-
-    visibleGrandparents.forEach(({ person }) => {
-      addNode(person, 'parent')
-    })
-
-    visibleParents.forEach(({ person, relationshipType }) => {
-      addNode(person, 'parent')
-      addEdge(`parent-${person.id}-${selectedTreePerson.id}`, person.id, selectedTreePerson.id, relationshipType)
-
-      const grandparentLinks = visibleGrandparents.filter(
-        ({ person: grandparent }) =>
-          treeRelationships.some(
-            (relationship) =>
-              relationship.person_a_id === grandparent.id &&
-              relationship.person_b_id === person.id &&
-              isParentRelationshipType(relationship.relationship_type)
-          )
+      const scopedRelationships = treeRelationships.filter(
+        (relationship) => personIds.has(relationship.person_a_id) && personIds.has(relationship.person_b_id)
       )
 
-      grandparentLinks.forEach(({ person: grandparent }) => {
-        const relationship = treeRelationships.find(
-          (item) =>
-            item.person_a_id === grandparent.id &&
-            item.person_b_id === person.id &&
-            isParentRelationshipType(item.relationship_type)
-        )
-
-        addEdge(
-          `grandparent-${grandparent.id}-${person.id}`,
-          grandparent.id,
-          person.id,
-          (relationship?.relationship_type as TreeRelativeLink['relationshipType']) ?? 'parent'
-        )
+      const model = buildTreeGraphModel({
+        people: exportPeople,
+        relationships: scopedRelationships,
+        visiblePersonIds: Array.from(personIds),
       })
-    })
-
-    visibleSiblings.forEach((person) => {
-      addNode(person, 'sibling')
-
-      const parentLinks = selectedTreeConnections.siblingParentLinks.get(person.id) ?? []
-      const visibleParentLinks = parentLinks.filter(({ parentId }) =>
-        visibleParents.some((parent) => parent.person.id === parentId)
+      const laidOut = await layoutTree(
+        model.nodes,
+        model.edges,
+        exportDirection === 'ancestors' ? 'UP' : 'DOWN'
       )
+      const baseSvg = buildTreeSvgFromLayout({
+        nodes: laidOut.nodes,
+        edges: laidOut.edges,
+        peopleById: model.peopleById,
+      })
 
-      if (visibleParentLinks.length > 0) {
-        const siblingConnectorId = `sibling-group-${selectedTreePerson.id}-${person.id}`
-        addConnectorNode(siblingConnectorId)
-
-        visibleParentLinks.forEach(({ parentId, relationshipType }) => {
-          addEdge(
-            `shared-parent-${parentId}-${siblingConnectorId}`,
-            parentId,
-            siblingConnectorId,
-            relationshipType as TreeRelativeLink['relationshipType']
-          )
-        })
-
-        addEdge(`shared-sibling-${siblingConnectorId}-${person.id}`, siblingConnectorId, person.id, 'sibling')
-      } else {
-        addEdge(`sibling-${selectedTreePerson.id}-${person.id}`, selectedTreePerson.id, person.id, 'sibling')
-      }
-    })
-
-    visibleChildren.forEach(({ person, relationshipType }) => {
-      addNode(person, 'child')
-      addEdge(
-        `child-${selectedTreePerson.id}-${person.id}`,
-        familyConnectorId || selectedTreePerson.id,
-        person.id,
-        relationshipType
-      )
-    })
-
-    visibleGrandchildren.forEach(({ person }) => {
-      addNode(person, 'child')
-
-      const parentRelationship = treeRelationships.find(
-        (relationship) =>
-          relationship.person_b_id === person.id &&
-          visibleChildren.some(({ person: child }) => child.id === relationship.person_a_id) &&
-          isParentRelationshipType(relationship.relationship_type)
-      )
-
-      if (parentRelationship) {
-        addEdge(
-          `grandchild-${parentRelationship.person_a_id}-${person.id}`,
-          parentRelationship.person_a_id,
-          person.id,
-          parentRelationship.relationship_type as TreeRelativeLink['relationshipType']
-        )
-      }
-    })
-
-    dagre.layout(graph)
-
-    const nodes = Array.from(nodeDefinitions.values()).map((node) => {
-      const layoutNode = graph.node(node.id)
-      const isConnectorNode =
-        node.id.startsWith('family-group-') || node.id.startsWith('sibling-group-')
-      const fallbackWidth = isConnectorNode ? connectorNodeSize.width : personNodeSize.width
-      const fallbackHeight = isConnectorNode ? connectorNodeSize.height : personNodeSize.height
-
-      return {
-        ...node,
-        position: {
-          x: layoutNode.x - (layoutNode.width ?? fallbackWidth) / 2,
-          y: layoutNode.y - (layoutNode.height ?? fallbackHeight) / 2,
-        },
-      }
-    })
-
-    const edges = Array.from(edgeDefinitions.values())
-
-    return { nodes, edges }
-  }, [
-    collapsedTreeSections,
-    highlightedTreePath,
-    selectedTreeConnections,
-    selectedTreePerson,
-    treePeopleLookup,
-    treeRelationships,
-  ])
-
-  const exportGraph = useMemo(() => {
-    const rootPerson = treePeopleLookup.get(exportRootId)
-
-    if (!rootPerson) {
-      return null
-    }
-
-    const personIds = new Set<string>([rootPerson.id])
-    const edgeIds = new Set<string>()
-    const edgeRows: Array<{
-      id: string
-      source: string
-      target: string
-      label: string
-      type: 'parent' | 'step_parent' | 'adopted_parent' | 'spouse' | 'sibling'
-    }> = []
-
-    const pushEdge = (edge: (typeof edgeRows)[number]) => {
-      if (edgeIds.has(edge.id)) {
+      if (!active) {
         return
       }
 
-      edgeIds.add(edge.id)
-      edgeRows.push(edge)
-    }
-
-    const enqueueAncestors = (startId: string, depth: number) => {
-      if (depth >= exportGenerations) {
-        return
-      }
-
-      const parentEdges = treeRelationships.filter(
-        (relationship) =>
-          relationship.person_b_id === startId && isParentRelationshipType(relationship.relationship_type)
-      )
-
-      const filteredParentEdges =
-        depth === 0 && exportBranch !== 'both'
-          ? parentEdges.filter((relationship) => {
-              const parent = treePeopleLookup.get(relationship.person_a_id)
-              const normalizedGender = (parent?.gender ?? '').toLowerCase()
-
-              if (exportBranch === 'maternal') {
-                return normalizedGender.startsWith('f')
-              }
-
-              return normalizedGender.startsWith('m')
-            })
-          : parentEdges
-
-      for (const relationship of filteredParentEdges) {
-        personIds.add(relationship.person_a_id)
-        pushEdge({
-          id: relationship.id,
-          source: relationship.person_a_id,
-          target: relationship.person_b_id,
-          label:
-            relationship.relationship_type === 'step_parent'
-              ? 'step parent'
-              : relationship.relationship_type === 'adopted_parent'
-                ? 'adoptive parent'
-                : 'parent',
-          type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
-        })
-        enqueueAncestors(relationship.person_a_id, depth + 1)
-      }
-    }
-
-    const enqueueDescendants = (startId: string, depth: number) => {
-      if (depth >= exportGenerations) {
-        return
-      }
-
-      const childEdges = treeRelationships.filter(
-        (relationship) =>
-          relationship.person_a_id === startId && isParentRelationshipType(relationship.relationship_type)
-      )
-
-      for (const relationship of childEdges) {
-        personIds.add(relationship.person_b_id)
-        pushEdge({
-          id: relationship.id,
-          source: relationship.person_a_id,
-          target: relationship.person_b_id,
-          label:
-            relationship.relationship_type === 'step_parent'
-              ? 'step parent'
-              : relationship.relationship_type === 'adopted_parent'
-                ? 'adoptive parent'
-                : 'parent',
-          type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
-        })
-        enqueueDescendants(relationship.person_b_id, depth + 1)
-      }
-    }
-
-    if (exportDirection === 'ancestors' || exportDirection === 'both') {
-      enqueueAncestors(rootPerson.id, 0)
-    }
-
-    if (exportDirection === 'descendants' || exportDirection === 'both') {
-      enqueueDescendants(rootPerson.id, 0)
-    }
-
-    const includedSiblingIds = new Set<string>()
-
-    if (exportIncludeSiblings) {
-      for (const relationship of treeRelationships) {
-        if (
-          relationship.relationship_type === 'sibling' &&
-          (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
-        ) {
-          personIds.add(relationship.person_a_id)
-          personIds.add(relationship.person_b_id)
-          includedSiblingIds.add(relationship.person_a_id)
-          includedSiblingIds.add(relationship.person_b_id)
-          pushEdge({
-            id: relationship.id,
-            source: relationship.person_a_id,
-            target: relationship.person_b_id,
-            label: 'sibling',
-            type: 'sibling',
-          })
-        }
-      }
-    }
-
-    if (exportIncludeParentsOfSiblings) {
-      for (const relationship of treeRelationships) {
-        if (
-          isParentRelationshipType(relationship.relationship_type) &&
-          includedSiblingIds.has(relationship.person_b_id)
-        ) {
-          personIds.add(relationship.person_a_id)
-          personIds.add(relationship.person_b_id)
-          pushEdge({
-            id: relationship.id,
-            source: relationship.person_a_id,
-            target: relationship.person_b_id,
-            label:
-              relationship.relationship_type === 'step_parent'
-                ? 'step parent'
-                : relationship.relationship_type === 'adopted_parent'
-                  ? 'adoptive parent'
-                  : 'parent',
-            type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
-          })
-        }
-      }
-    }
-
-    if (exportIncludeSpouses) {
-      for (const relationship of treeRelationships) {
-        if (
-          relationship.relationship_type === 'spouse' &&
-          (personIds.has(relationship.person_a_id) || personIds.has(relationship.person_b_id))
-        ) {
-          personIds.add(relationship.person_a_id)
-          personIds.add(relationship.person_b_id)
-          pushEdge({
-            id: relationship.id,
-            source: relationship.person_a_id,
-            target: relationship.person_b_id,
-            label: 'spouse',
-            type: 'spouse',
-          })
-        }
-      }
-    }
-
-    if (exportIncludeSiblingSpouses) {
-      for (const relationship of treeRelationships) {
-        if (
-          relationship.relationship_type === 'spouse' &&
-          (includedSiblingIds.has(relationship.person_a_id) || includedSiblingIds.has(relationship.person_b_id))
-        ) {
-          personIds.add(relationship.person_a_id)
-          personIds.add(relationship.person_b_id)
-          pushEdge({
-            id: relationship.id,
-            source: relationship.person_a_id,
-            target: relationship.person_b_id,
-            label: 'spouse',
-            type: 'spouse',
-          })
-        }
-      }
-    }
-
-    if (exportIncludeChildrenOfSiblings) {
-      for (const relationship of treeRelationships) {
-        if (
-          isParentRelationshipType(relationship.relationship_type) &&
-          includedSiblingIds.has(relationship.person_a_id)
-        ) {
-          personIds.add(relationship.person_a_id)
-          personIds.add(relationship.person_b_id)
-          pushEdge({
-            id: relationship.id,
-            source: relationship.person_a_id,
-            target: relationship.person_b_id,
-            label:
-              relationship.relationship_type === 'step_parent'
-                ? 'step parent'
-                : relationship.relationship_type === 'adopted_parent'
-                  ? 'adoptive parent'
-                  : 'parent',
-            type: relationship.relationship_type as 'parent' | 'step_parent' | 'adopted_parent',
-          })
-        }
-      }
-    }
-
-    const exportPeople = Array.from(personIds)
-      .map((personId) => treePeopleLookup.get(personId))
-      .filter((person): person is TreePersonItem => Boolean(person))
-
-    const graph = new dagre.graphlib.Graph()
-    graph.setGraph({
-      rankdir: exportDirection === 'ancestors' ? 'BT' : 'TB',
-      ranksep: 90,
-      nodesep: 32,
-      marginx: 24,
-      marginy: 24,
-    })
-    graph.setDefaultEdgeLabel(() => ({}))
-
-    const nodeWidth = exportDetailLevel === 'minimal' ? 150 : exportDetailLevel === 'standard' ? 180 : 210
-    const nodeHeight = exportDetailLevel === 'minimal' ? 58 : exportDetailLevel === 'standard' ? 82 : 116
-
-    for (const person of exportPeople) {
-      graph.setNode(person.id, { width: nodeWidth, height: nodeHeight })
-    }
-
-    for (const edge of edgeRows) {
-      graph.setEdge(edge.source, edge.target)
-    }
-
-    dagre.layout(graph)
-
-    const template =
-      EXPORT_TEMPLATES.find((item) => item.id === exportTemplateId) ?? EXPORT_TEMPLATES[0]
-
-    const laidOutNodes = exportPeople.map((person) => {
-      const layoutNode = graph.node(person.id)
-
-      return {
-        person,
-        x: layoutNode.x - nodeWidth / 2,
-        y: layoutNode.y - nodeHeight / 2,
-        width: nodeWidth,
-        height: nodeHeight,
-      }
-    })
-
-    const xValues = laidOutNodes.map((node) => node.x)
-    const yValues = laidOutNodes.map((node) => node.y)
-    const maxXValues = laidOutNodes.map((node) => node.x + node.width)
-    const maxYValues = laidOutNodes.map((node) => node.y + node.height)
-    const contentWidth = Math.max(...maxXValues, 0) - Math.min(...xValues, 0) + 80
-    const contentHeight = Math.max(...maxYValues, 0) - Math.min(...yValues, 0) + 80
-
-    const presetSizes: Record<'18x24' | '24x36' | '36x48', { width: number; height: number }> = {
-      '18x24': { width: 1728, height: 2304 },
-      '24x36': { width: 2304, height: 3456 },
-      '36x48': { width: 3456, height: 4608 },
-    }
-
-    const targetSize =
-      exportFormat === 'letter'
-        ? { width: 816, height: 1056 }
-        : exportPosterSize === 'dynamic'
-          ? { width: Math.max(1200, contentWidth), height: Math.max(900, contentHeight) }
-          : presetSizes[exportPosterSize]
-
-    const scale = Math.min(
-      (targetSize.width - 48) / Math.max(contentWidth, 1),
-      (targetSize.height - 48) / Math.max(contentHeight, 1)
-    )
-    const scaledBodyFont = 16 * scale
-    const warning =
-      exportFormat === 'letter' && scaledBodyFont < 12
-        ? 'Poster recommended for readability.'
-        : ''
-
-    const edgeMarkup = edgeRows
-      .map((edge) => {
-        const sourceNode = graph.node(edge.source)
-        const targetNode = graph.node(edge.target)
-        const stroke =
-          edge.type === 'spouse'
-            ? '#b45309'
-            : edge.type === 'sibling'
-              ? '#2563eb'
-            : edge.type === 'step_parent'
-              ? '#7c3aed'
-              : edge.type === 'adopted_parent'
-                ? '#059669'
-                : template.stroke
-        const dashArray =
-          edge.type === 'step_parent' ? '8 6' : edge.type === 'adopted_parent' ? '4 4' : '0'
-
-        return `<line x1="${sourceNode.x}" y1="${sourceNode.y + nodeHeight / 2}" x2="${targetNode.x}" y2="${targetNode.y - nodeHeight / 2}" stroke="${stroke}" stroke-width="${edge.type === 'spouse' ? 2 : 2.5}" stroke-dasharray="${dashArray}" />`
+      setExportGraph({
+        svgMarkup: baseSvg.svgMarkup,
+        width: baseSvg.width,
+        height: baseSvg.height,
+        warning:
+          exportFormat === 'letter' && baseSvg.nodeCount >= 16
+            ? 'Poster recommended for readability.'
+            : '',
+        nodeCount: baseSvg.nodeCount,
       })
-      .join('')
+    }
 
-    const nodeMarkup = laidOutNodes
-      .map((node) => {
-        const fullName = escapeSvgText(`${node.person.first_name} ${node.person.last_name}`.trim())
-        const years = escapeSvgText(
-          node.person.birth_date ? `${new Date(node.person.birth_date).getFullYear()}` : 'Year unknown'
-        )
-        const location = escapeSvgText(
-          [node.person.city, node.person.state].filter(Boolean).join(', ') || 'Location not set'
-        )
-        const avatarInitial = escapeSvgText(node.person.first_name.slice(0, 1).toUpperCase())
-        const avatarMarkup =
-          exportDetailLevel === 'full'
-            ? `<circle cx="${node.x + 22}" cy="${node.y + 22}" r="14" fill="${template.accent}" opacity="0.18" />
-               <text x="${node.x + 22}" y="${node.y + 27}" text-anchor="middle" font-size="14" font-weight="700" fill="${template.stroke}">${avatarInitial}</text>`
-            : ''
-        const titleX = exportDetailLevel === 'full' ? node.x + 46 : node.x + 14
-        const yearsMarkup =
-          exportDetailLevel === 'minimal'
-            ? ''
-            : `<text x="${titleX}" y="${node.y + 50}" font-size="12" fill="#6b7280">${years}</text>`
-        const fullMarkup =
-          exportDetailLevel === 'full'
-            ? `<text x="${node.x + 14}" y="${node.y + 74}" font-size="12" fill="#6b7280">${location}</text>`
-            : ''
+    void run()
 
-        return `<g>
-          <rect x="${node.x}" y="${node.y}" rx="12" ry="12" width="${node.width}" height="${node.height}" fill="${template.fill}" stroke="${template.stroke}" stroke-width="2" />
-          ${avatarMarkup}
-          <text x="${titleX}" y="${node.y + 28}" font-size="14" font-weight="700" fill="${template.stroke}">${fullName}</text>
-          ${yearsMarkup}
-          ${fullMarkup}
-        </g>`
-      })
-      .join('')
-
-    const svgMarkup = `<svg xmlns="http://www.w3.org/2000/svg" width="${targetSize.width}" height="${targetSize.height}" viewBox="0 0 ${targetSize.width} ${targetSize.height}">
-      <rect width="100%" height="100%" fill="#f8f9fb" />
-      <g transform="translate(24 24) scale(${scale})">
-        ${edgeMarkup}
-        ${nodeMarkup}
-      </g>
-    </svg>`
-
-    return {
-      svgMarkup,
-      width: targetSize.width,
-      height: targetSize.height,
-      warning,
-      nodeCount: exportPeople.length,
+    return () => {
+      active = false
     }
   }, [
     exportBranch,
-    exportIncludeChildrenOfSiblings,
-    exportIncludeParentsOfSiblings,
-    exportDetailLevel,
     exportDirection,
     exportFormat,
     exportGenerations,
+    exportIncludeChildrenOfSiblings,
+    exportIncludeParentsOfSiblings,
     exportIncludeSiblingSpouses,
     exportIncludeSiblings,
     exportIncludeSpouses,
-    exportPosterSize,
     exportRootId,
-    exportTemplateId,
     treePeopleLookup,
     treeRelationships,
   ])
@@ -2890,7 +2395,7 @@ function App() {
   }, [exportDetailLevel, exportGraph])
 
   useEffect(() => {
-    if (!treeFlowInstance || selectedTreeGraph.nodes.length === 0) {
+    if (!treeFlowInstance || treeRenderNodes.length === 0) {
       return
     }
 
@@ -2902,7 +2407,7 @@ function App() {
     }, 0)
 
     return () => window.clearTimeout(timeoutId)
-  }, [selectedTreeGraph, treeFlowInstance])
+  }, [treeRenderNodes, treeFlowInstance])
 
   useEffect(() => {
     if (DEV_NO_AUTH_TEST_MODE) {
@@ -5074,7 +4579,7 @@ function App() {
   }
 
   const handleFitTreeBranch = () => {
-    if (!treeFlowInstance || selectedTreeGraph.nodes.length === 0) {
+    if (!treeFlowInstance || treeRenderNodes.length === 0) {
       return
     }
 
@@ -5096,7 +4601,7 @@ function App() {
       return
     }
 
-    const selectedNode = selectedTreeGraph.nodes.find((node) => node.id === selectedTreePerson.id)
+    const selectedNode = treeRenderNodes.find((node) => node.id === `P:${selectedTreePerson.id}`)
 
     if (!selectedNode) {
       return
@@ -6289,11 +5794,17 @@ function App() {
                             </button>
                           </div>
                           <Suspense fallback={<div className="tree-flow-shell"><p className="muted-text">Loading tree canvas...</p></div>}>
-                            <TreeCanvas
-                              edges={selectedTreeGraph.edges}
-                              nodes={selectedTreeGraph.nodes}
+                            <TreeGraph
                               onInit={setTreeFlowInstance}
+                              onLayoutChange={(nodes) => {
+                                setTreeRenderNodes(nodes)
+                              }}
                               onNodeSelect={setSelectedTreePersonId}
+                              people={treePeople}
+                              relationships={treeRelationships}
+                              rootPersonId={treeRootId}
+                              selectedPersonId={selectedTreePersonId}
+                              visiblePersonIds={visibleTreePersonIds}
                             />
                           </Suspense>
                           <div className="card tree-legend">
@@ -6301,7 +5812,7 @@ function App() {
                             <p className="muted-text">
                               {highlightedTreePath
                                 ? 'Path focus mode highlights the exact connection in gold and temporarily hides unrelated nodes.'
-                                : 'Dagre now spaces the branch automatically, couples share a family connector before children branch downward, and dense generations can be collapsed or expanded on demand.'}
+                                : 'ELK layered layout now renders people + union nodes so spouses stay aligned and children connect from the couple union.'}
                             </p>
                           </div>
                           <div className="card">
@@ -6946,7 +6457,7 @@ function App() {
                   ) : null}
                   <div className="map-layout">
                     <aside className="card form-card">
-                      <div className="quick-actions">
+                      <div className="quick-actions export-preset-grid">
                         <button
                           className={`action-tile ${
                             activeExportPresetLabel === EXPORT_PRESET_LABELS.immediate_family
@@ -7792,3 +7303,4 @@ function App() {
 }
 
 export default App
+

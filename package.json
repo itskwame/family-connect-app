@@ -14,6 +14,7 @@
     "@types/dagre": "^0.7.54",
     "@types/leaflet": "^1.9.21",
     "dagre": "^0.8.5",
+    "elkjs": "^0.11.1",
     "jspdf": "^4.2.0",
     "leaflet": "^1.9.4",
     "react": "^19.2.0",

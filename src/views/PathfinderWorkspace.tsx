@@ -60,6 +60,15 @@ export default function PathfinderWorkspace({
     () => new Map(treePeople.map((person) => [person.id, person])),
     [treePeople]
   )
+  const personBOptions = useMemo(
+    () =>
+      treePeople
+        .filter((person) => person.id !== pathfinderPersonAId)
+        .sort((left, right) =>
+          `${left.first_name} ${left.last_name}`.trim().localeCompare(`${right.first_name} ${right.last_name}`.trim())
+        ),
+    [pathfinderPersonAId, treePeople]
+  )
 
   return (
     <section className="workspace-panel">
@@ -110,11 +119,33 @@ export default function PathfinderWorkspace({
           </label>
           <label>
             Person B
+            <select
+              className="text-input"
+              onChange={(event) => {
+                const nextPersonId = event.target.value
+                setPathfinderPersonBId(nextPersonId)
+                const selectedPerson = treePeopleLookup.get(nextPersonId)
+                setPathfinderPersonBQuery(
+                  selectedPerson ? `${selectedPerson.first_name} ${selectedPerson.last_name}`.trim() : ''
+                )
+                clearPathfinderResult()
+              }}
+              value={pathfinderPersonBId}
+            >
+              <option value="">Select a family member</option>
+              {personBOptions.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {`${person.first_name} ${person.last_name}`.trim()}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Optional name search
             <input
               className="text-input"
               onChange={(event) => {
                 setPathfinderPersonBQuery(event.target.value)
-                setPathfinderPersonBId('')
                 clearPathfinderResult()
               }}
               placeholder="Search by name"

@@ -779,6 +779,19 @@
   gap: 0.75rem;
 }
 
+.export-preset-grid {
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+}
+
+.export-preset-grid .action-tile {
+  min-height: 56px;
+  white-space: normal;
+  word-break: normal;
+  line-height: 1.25;
+  text-align: center;
+  padding: 0.7rem 0.75rem;
+}
+
 .action-tile {
   padding: 1rem 0.8rem;
   background: #ffffff;
@@ -934,6 +947,11 @@
 .tree-flow-node-root {
   border-color: rgba(47, 184, 163, 0.35);
   box-shadow: 0 14px 30px rgba(47, 184, 163, 0.16);
+}
+
+.tree-flow-node-highlighted {
+  box-shadow: 0 0 0 3px rgba(244, 185, 66, 0.28), 0 10px 24px rgba(15, 23, 42, 0.08);
+  border-color: rgba(244, 185, 66, 0.6);
 }
 
 .tree-flow-node-parent {
