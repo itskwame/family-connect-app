@@ -110,14 +110,19 @@ type BusinessDirectoryItem = {
   businessState: string | null
   businessWebsite: string | null
 }
+type FamilyMapMember = {
+  id: string
+  name: string
+}
 type FamilyMapCluster = {
   id: string
   label: string
+  country: string | null
   city: string | null
   state: string | null
   zip: string | null
   count: number
-  peopleNames: string[]
+  peopleMembers: FamilyMapMember[]
   latitude: number
   longitude: number
 }
@@ -708,20 +713,23 @@ function buildDevWhiteFamilySeed() {
     }
 
     const existing = clusterMap.get(key)
+    const memberName = `${person.first_name} ${person.last_name}`.trim()
+
     if (existing) {
       existing.count += 1
-      existing.peopleNames.push(`${person.first_name} ${person.last_name}`.trim())
+      existing.peopleMembers.push({ id: person.id, name: memberName })
       continue
     }
 
     clusterMap.set(key, {
       id: `cluster-${clusterMap.size + 1}`,
       label: `${city}, ${state}`,
+      country: 'United States',
       city,
       state,
       zip,
       count: 1,
-      peopleNames: [`${person.first_name} ${person.last_name}`.trim()],
+      peopleMembers: [{ id: person.id, name: memberName }],
       latitude: location.latitude,
       longitude: location.longitude,
     })
@@ -2952,7 +2960,12 @@ function App() {
 
         const grouped = new Map<
           string,
-          { city: string | null; state: string | null; zip: string | null; peopleNames: string[] }
+          {
+            city: string | null
+            state: string | null
+            zip: string | null
+            peopleMembers: FamilyMapMember[]
+          }
         >()
 
         for (const row of data ?? []) {
@@ -2971,13 +2984,14 @@ function App() {
               city,
               state,
               zip,
-              peopleNames: [],
+              peopleMembers: [],
             })
           }
 
-          grouped
-            .get(key)
-            ?.peopleNames.push(`${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || 'Unknown member')
+          grouped.get(key)?.peopleMembers.push({
+            id: row.id,
+            name: `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || 'Unknown member',
+          })
         }
 
         const clusters = Array.from(grouped.entries()).map(([id, cluster]) => {
@@ -2987,11 +3001,12 @@ function App() {
           return {
             id,
             label,
+            country: cluster.state ? 'United States' : null,
             city: cluster.city,
             state: cluster.state,
             zip: cluster.zip,
-            count: cluster.peopleNames.length,
-            peopleNames: cluster.peopleNames.sort((a, b) => a.localeCompare(b)),
+            count: cluster.peopleMembers.length,
+            peopleMembers: cluster.peopleMembers.sort((a, b) => a.name.localeCompare(b.name)),
             latitude: coordinates.latitude,
             longitude: coordinates.longitude,
           } satisfies FamilyMapCluster
@@ -4566,6 +4581,106 @@ function App() {
     setSelectedConversationId(conversation.id)
     setNewConversationParticipantIds([])
     setNewConversationType('direct')
+  }
+
+  const handleOpenProfileFromMap = (personId: string) => {
+    const person =
+      treePeople.find((item) => item.id === personId) ??
+      peopleOptions.find((item) => item.id === personId)
+
+    const personName =
+      person && 'first_name' in person
+        ? `${person.first_name} ${person.last_name}`.trim()
+        : person?.name ?? 'Family member'
+
+    setCurrentPersonId(personId)
+    setCurrentPersonName(personName)
+
+    if (DEV_NO_AUTH_TEST_MODE) {
+      const treePerson = treePeople.find((item) => item.id === personId)
+      if (treePerson) {
+        const devProfile: ProfileRecord = {
+          id: treePerson.id,
+          first_name: treePerson.first_name,
+          last_name: treePerson.last_name,
+          gender: treePerson.gender,
+          birth_date: treePerson.birth_date,
+          city: treePerson.city,
+          state: treePerson.state,
+          zip: null,
+          bio: 'Temporary seeded profile for test mode.',
+          contact_email: null,
+          contact_phone: null,
+          profile_photo_url: null,
+          business_name: treePerson.business_name ?? null,
+          business_logo_url: null,
+          business_category: treePerson.business_name ? 'Family Business' : null,
+          business_description: treePerson.business_name ? `${treePerson.business_name} profile` : null,
+          business_city: treePerson.city,
+          business_state: treePerson.state,
+          business_website: null,
+          business_instagram: null,
+          business_facebook: null,
+        }
+
+        setProfileRecord(devProfile)
+        setProfileForm(buildProfileForm(devProfile))
+      }
+    }
+
+    setIsEditingProfile(false)
+    setProfileTab('overview')
+    setWorkspaceView('profile')
+  }
+
+  const handleOpenDirectMessageFromMap = (personId: string) => {
+    if (!currentPersonId || personId === currentPersonId) {
+      return
+    }
+
+    const existingDirectConversation = conversations.find(
+      (conversation) =>
+        conversation.type === 'direct' &&
+        conversation.participantIds.includes(currentPersonId) &&
+        conversation.participantIds.includes(personId)
+    )
+
+    if (existingDirectConversation) {
+      setSelectedConversationId(existingDirectConversation.id)
+      setWorkspaceView('messages')
+      return
+    }
+
+    if (DEV_NO_AUTH_TEST_MODE) {
+      const nameEntries: Array<[string, string]> = [
+        ...peopleOptions.map((person) => [person.id, person.name] as [string, string]),
+        ...treePeople.map(
+          (person) => [person.id, `${person.first_name} ${person.last_name}`.trim()] as [string, string]
+        ),
+      ]
+      const nameLookup = new Map<string, string>(nameEntries)
+      const otherName = nameLookup.get(personId) ?? 'Direct Chat'
+      const localConversationId = `local-direct-${currentPersonId}-${personId}`
+
+      setConversations((current) => [
+        {
+          id: localConversationId,
+          type: 'direct',
+          title: otherName,
+          participantIds: [currentPersonId, personId],
+          preview: 'No messages yet.',
+          unreadCount: 0,
+        },
+        ...current,
+      ])
+      setSelectedConversationId(localConversationId)
+      setWorkspaceView('messages')
+      return
+    }
+
+    setNewConversationType('direct')
+    setNewConversationParticipantIds([personId])
+    setWorkspaceView('messages')
   }
 
   const handleCreatePost = async (event: FormEvent<HTMLFormElement>) => {
@@ -6632,8 +6747,11 @@ function App() {
                 <Suspense fallback={<section className="workspace-panel"><div className="card"><p className="muted-text">Loading map...</p></div></section>}>
                   <MapWorkspace
                     familyMapClusters={familyMapClusters}
+                    currentPersonId={currentPersonId}
                     mapError={mapError}
                     mapMode={mapMode}
+                    onOpenDirectMessage={handleOpenDirectMessageFromMap}
+                    onOpenProfile={handleOpenProfileFromMap}
                     selectedMapClusterId={selectedMapClusterId}
                     setSelectedMapClusterId={setSelectedMapClusterId}
                   />
