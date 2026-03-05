@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CircleMarker, MapContainer, Popup, TileLayer, useMapEvents } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 
@@ -84,9 +84,11 @@ export default function MapWorkspace({
   setSelectedMapClusterId,
 }: Props) {
   const [mapZoom, setMapZoom] = useState(5)
+  const membersPanelRef = useRef<HTMLDivElement | null>(null)
   const [countryFilter, setCountryFilter] = useState('All')
   const [stateFilter, setStateFilter] = useState('All')
   const [cityFilter, setCityFilter] = useState('All')
+  const [expandedLocationId, setExpandedLocationId] = useState('')
 
   const { stateClusters, cityClusters } = useMemo(() => {
     const stateGrouped = new Map<
@@ -425,17 +427,35 @@ export default function MapWorkspace({
           id: stateCluster.id,
           label: stateCluster.label,
           count: stateCluster.count,
+          members: stateCluster.members,
           active: selectedState?.id === stateCluster.id,
         }))
       : filteredCityClusters.map((cityCluster) => ({
           id: cityCluster.id,
           label: cityCluster.label,
           count: cityCluster.count,
+          members: cityCluster.members,
           active: selectedCity?.id === cityCluster.id,
         }))
 
   const selectedScopeMembers =
     viewLevel === 'state' ? selectedState?.members ?? [] : selectedCity?.members ?? []
+
+  function openLocationMembers(locationId: string) {
+    setSelectedMapClusterId(locationId)
+    setExpandedLocationId(locationId)
+
+    requestAnimationFrame(() => {
+      membersPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
+  useEffect(() => {
+    const validIds = new Set(browseItems.map((item) => item.id))
+    if (expandedLocationId && !validIds.has(expandedLocationId)) {
+      setExpandedLocationId('')
+    }
+  }, [browseItems, expandedLocationId])
 
   return (
     <section className="workspace-panel">
@@ -523,20 +543,35 @@ export default function MapWorkspace({
           {browseItems.length > 0 ? (
             <div className="path-match-list">
               {browseItems.map((item) => (
-                <button
-                  className={`path-match-item ${item.active ? 'path-match-item-active' : ''}`}
-                  key={item.id}
-                  onClick={() => setSelectedMapClusterId(item.id)}
-                  type="button"
-                >
-                  <span className="avatar-badge">{item.count}</span>
-                  <span>
-                    <strong>{item.label || 'Unknown location'}</strong>
-                    <small>
-                      {item.count} family member{item.count === 1 ? '' : 's'}
-                    </small>
-                  </span>
-                </button>
+                <div className={`path-match-item ${item.active ? 'path-match-item-active' : ''}`} key={item.id}>
+                  <button className="path-match-main" onClick={() => openLocationMembers(item.id)} type="button">
+                    <span className="avatar-badge">{item.count}</span>
+                    <span>
+                      <strong>{item.label || 'Unknown location'}</strong>
+                      <small>
+                        {item.count} family member{item.count === 1 ? '' : 's'}
+                      </small>
+                    </span>
+                  </button>
+                  {expandedLocationId === item.id ? (
+                    <div className="path-match-members">
+                      <p className="eyebrow">Members</p>
+                      <ul className="stack-list">
+                        {item.members.map((member) => (
+                          <li key={member.id}>
+                            <button
+                              className="ghost-button inline-button"
+                              onClick={() => onOpenProfile(member.id)}
+                              type="button"
+                            >
+                              {member.name}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </div>
           ) : (
@@ -576,11 +611,19 @@ export default function MapWorkspace({
                       }}
                       radius={Math.min(26, 9 + stateCluster.count * 1.2)}
                     >
-                      <Popup>
-                        <strong>{stateCluster.label}</strong>
-                        <br />
-                        {stateCluster.count} family member{stateCluster.count === 1 ? '' : 's'}
-                      </Popup>
+                        <Popup>
+                          <strong>{stateCluster.label}</strong>
+                          <br />
+                          {stateCluster.count} family member{stateCluster.count === 1 ? '' : 's'}
+                          <br />
+                          <button
+                            className="ghost-button inline-button"
+                            onClick={() => openLocationMembers(stateCluster.id)}
+                            type="button"
+                          >
+                            View members
+                          </button>
+                        </Popup>
                     </CircleMarker>
                   ))
                 : cityClusters
@@ -603,6 +646,14 @@ export default function MapWorkspace({
                           <strong>{cityCluster.label}</strong>
                           <br />
                           {cityCluster.count} family member{cityCluster.count === 1 ? '' : 's'}
+                          <br />
+                          <button
+                            className="ghost-button inline-button"
+                            onClick={() => openLocationMembers(cityCluster.id)}
+                            type="button"
+                          >
+                            View members
+                          </button>
                         </Popup>
                       </CircleMarker>
                     ))}
@@ -627,6 +678,18 @@ export default function MapWorkspace({
                         <strong>{zipPoint.label}</strong>
                         <br />
                         {zipPoint.count} family member{zipPoint.count === 1 ? '' : 's'}
+                        {selectedCity ? (
+                          <>
+                            <br />
+                            <button
+                              className="ghost-button inline-button"
+                              onClick={() => openLocationMembers(selectedCity.id)}
+                              type="button"
+                            >
+                              View city members
+                            </button>
+                          </>
+                        ) : null}
                       </Popup>
                     </CircleMarker>
                   ))
@@ -647,7 +710,7 @@ export default function MapWorkspace({
         </div>
       </div>
       <div className="dashboard-grid">
-        <div className="card">
+        <div className="card" ref={membersPanelRef}>
           <p className="eyebrow">
             {viewLevel === 'state'
               ? 'Members in selected state'

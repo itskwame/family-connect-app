@@ -1073,8 +1073,7 @@
 }
 
 .path-match-item {
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 0.75rem;
   width: 100%;
   padding: 0.75rem;
@@ -1084,12 +1083,28 @@
   text-align: left;
 }
 
+.path-match-main {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
 .path-match-item span {
   display: grid;
 }
 
 .path-match-item small {
   color: var(--color-muted);
+}
+
+.path-match-members {
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border);
 }
 
 .path-match-item-active {
