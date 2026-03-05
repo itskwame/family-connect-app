@@ -50,6 +50,10 @@ type ProfileRecord = {
   business_website: string | null
   business_instagram: string | null
   business_facebook: string | null
+  business_about: string | null
+  business_images: string[] | null
+  business_videos: string[] | null
+  business_family_discount_code: string | null
 }
 type ProfileTab = 'overview' | 'timeline' | 'media' | 'connections' | 'business'
 type ConnectionItem = {
@@ -101,14 +105,21 @@ type FeedPostItem = {
 }
 type BusinessDirectoryItem = {
   id: string
+  ownerPersonId: string
   ownerName: string
   businessName: string
   businessLogoUrl: string | null
   businessCategory: string | null
+  businessAbout: string | null
   businessDescription: string | null
   businessCity: string | null
   businessState: string | null
   businessWebsite: string | null
+  businessInstagram: string | null
+  businessFacebook: string | null
+  businessImages: string[]
+  businessVideos: string[]
+  businessFamilyDiscountCode: string | null
 }
 type FamilyMapMember = {
   id: string
@@ -417,6 +428,13 @@ function estimateLocationCoordinates(city: string | null, state: string | null, 
   }
 }
 
+function parseListField(value: string) {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+}
+
 function buildProfileForm(record: ProfileRecord) {
   return {
     firstName: record.first_name ?? '',
@@ -438,6 +456,10 @@ function buildProfileForm(record: ProfileRecord) {
     businessWebsite: record.business_website ?? '',
     businessInstagram: record.business_instagram ?? '',
     businessFacebook: record.business_facebook ?? '',
+    businessAbout: record.business_about ?? '',
+    businessImages: (record.business_images ?? []).join('\n'),
+    businessVideos: (record.business_videos ?? []).join('\n'),
+    businessFamilyDiscountCode: record.business_family_discount_code ?? '',
   }
 }
 
@@ -655,14 +677,21 @@ function buildDevWhiteFamilySeed() {
     if (person.business_name) {
       businesses.push({
         id: person.id,
+        ownerPersonId: person.id,
         ownerName: `${person.first_name} ${person.last_name}`.trim(),
         businessName: person.business_name,
         businessLogoUrl: null,
         businessCategory: person.business_category ?? null,
+        businessAbout: `${person.business_name} is a family-owned business.`,
         businessDescription: person.business_description ?? null,
         businessCity: person.business_city ?? person.city ?? null,
         businessState: person.business_state ?? person.state ?? null,
         businessWebsite: person.business_website ?? null,
+        businessInstagram: null,
+        businessFacebook: null,
+        businessImages: [],
+        businessVideos: [],
+        businessFamilyDiscountCode: null,
       })
     }
   }
@@ -690,6 +719,10 @@ function buildDevWhiteFamilySeed() {
     business_website: null,
     business_instagram: null,
     business_facebook: null,
+    business_about: null,
+    business_images: null,
+    business_videos: null,
+    business_family_discount_code: null,
   }
 
   const peopleOptions: PersonOption[] = people
@@ -999,6 +1032,7 @@ function App() {
   const [businessCategoryFilter, setBusinessCategoryFilter] = useState('All')
   const [businessStateFilter, setBusinessStateFilter] = useState('All')
   const [selectedBusinessId, setSelectedBusinessId] = useState('')
+  const [isBusinessProfileOpen, setIsBusinessProfileOpen] = useState(false)
   const [businessDirectoryItems, setBusinessDirectoryItems] = useState<BusinessDirectoryItem[]>([])
   const [mapMode, setMapMode] = useState<'idle' | 'loading'>('idle')
   const [mapError, setMapError] = useState('')
@@ -1101,6 +1135,10 @@ function App() {
     businessWebsite: '',
     businessInstagram: '',
     businessFacebook: '',
+    businessAbout: '',
+    businessImages: '',
+    businessVideos: '',
+    businessFamilyDiscountCode: '',
   })
   const [claimCandidates, setClaimCandidates] = useState<CandidateProfile[]>([])
   const [showClaimModal, setShowClaimModal] = useState(false)
@@ -1366,7 +1404,7 @@ function App() {
     void client
       .from('people')
       .select(
-        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
+        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook, business_about, business_images, business_videos, business_family_discount_code'
       )
       .eq('id', currentPersonId)
       .maybeSingle()
@@ -2886,7 +2924,7 @@ function App() {
     void client
       .from('people')
       .select(
-        'id, first_name, last_name, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website'
+        'id, first_name, last_name, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook, business_about, business_images, business_videos, business_family_discount_code'
       )
       .eq('family_id', currentFamilyId)
       .not('business_name', 'is', null)
@@ -2906,14 +2944,21 @@ function App() {
           .filter((row) => (row.business_name ?? '').trim() !== '')
           .map((row) => ({
             id: row.id,
+            ownerPersonId: row.id,
             ownerName: `${row.first_name} ${row.last_name}`.trim(),
             businessName: row.business_name ?? '',
             businessLogoUrl: row.business_logo_url ?? null,
             businessCategory: row.business_category ?? null,
+            businessAbout: row.business_about ?? null,
             businessDescription: row.business_description ?? null,
             businessCity: row.business_city ?? null,
             businessState: row.business_state ?? null,
             businessWebsite: row.business_website ?? null,
+            businessInstagram: row.business_instagram ?? null,
+            businessFacebook: row.business_facebook ?? null,
+            businessImages: row.business_images ?? [],
+            businessVideos: row.business_videos ?? [],
+            businessFamilyDiscountCode: row.business_family_discount_code ?? null,
           }))
 
         setBusinessDirectoryItems(items)
@@ -3055,6 +3100,12 @@ function App() {
     filteredBusinessDirectoryItems.find((item) => item.id === selectedBusinessId) ??
     filteredBusinessDirectoryItems[0] ??
     null
+
+  useEffect(() => {
+    if (!selectedBusiness) {
+      setIsBusinessProfileOpen(false)
+    }
+  }, [selectedBusiness])
 
   useEffect(() => {
     if (DEV_NO_AUTH_TEST_MODE) {
@@ -4303,6 +4354,8 @@ function App() {
 
     resetProfileFeedback()
     setProfileMode('saving')
+    const businessImages = parseListField(profileForm.businessImages)
+    const businessVideos = parseListField(profileForm.businessVideos)
 
     const { data, error } = await client
       .from('people')
@@ -4326,10 +4379,14 @@ function App() {
         business_website: profileForm.businessWebsite.trim() || null,
         business_instagram: profileForm.businessInstagram.trim() || null,
         business_facebook: profileForm.businessFacebook.trim() || null,
+        business_about: profileForm.businessAbout.trim() || null,
+        business_images: businessImages.length > 0 ? businessImages : null,
+        business_videos: businessVideos.length > 0 ? businessVideos : null,
+        business_family_discount_code: profileForm.businessFamilyDiscountCode.trim() || null,
       })
       .eq('id', currentPersonId)
       .select(
-        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook'
+        'id, first_name, last_name, gender, birth_date, city, state, zip, bio, contact_email, contact_phone, profile_photo_url, business_name, business_logo_url, business_category, business_description, business_city, business_state, business_website, business_instagram, business_facebook, business_about, business_images, business_videos, business_family_discount_code'
       )
       .single()
 
@@ -4621,6 +4678,10 @@ function App() {
           business_website: null,
           business_instagram: null,
           business_facebook: null,
+          business_about: null,
+          business_images: null,
+          business_videos: null,
+          business_family_discount_code: null,
         }
 
         setProfileRecord(devProfile)
@@ -6622,126 +6683,235 @@ function App() {
                       <p>{businessDirectoryError}</p>
                     </div>
                   ) : null}
-                  <div className="dashboard-grid">
-                    <div className="card form-card">
-                      <label>
-                        Search
-                        <input
-                          className="text-input"
-                          onChange={(event) => setBusinessSearch(event.target.value)}
-                          placeholder="Search owner or business"
-                          type="text"
-                          value={businessSearch}
-                        />
-                      </label>
-                      <label>
-                        Category
-                        <select
-                          className="text-input"
-                          onChange={(event) => setBusinessCategoryFilter(event.target.value)}
-                          value={businessCategoryFilter}
+                  {isBusinessProfileOpen && selectedBusiness ? (
+                    <article className="card business-profile-page">
+                      <div className="business-profile-header">
+                        <button
+                          className="secondary-button"
+                          onClick={() => setIsBusinessProfileOpen(false)}
+                          type="button"
                         >
-                          {businessCategoryOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        State
-                        <select
-                          className="text-input"
-                          onChange={(event) => setBusinessStateFilter(event.target.value)}
-                          value={businessStateFilter}
+                          Back to directory
+                        </button>
+                        <button
+                          className="ghost-button"
+                          onClick={() => handleOpenProfileFromMap(selectedBusiness.ownerPersonId)}
+                          type="button"
                         >
-                          {businessStateOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <div className="status-callout">
-                        <strong>Results</strong>
-                        <p>
-                          {businessDirectoryMode === 'loading'
-                            ? 'Loading businesses...'
-                            : `${filteredBusinessDirectoryItems.length} business${
-                                filteredBusinessDirectoryItems.length === 1 ? '' : 'es'
-                              } found`}
-                        </p>
+                          View owner profile
+                        </button>
                       </div>
-                    </div>
-                    <div className="card">
-                      <p className="eyebrow">Selected Business</p>
-                      {selectedBusiness ? (
-                        <div className="business-detail">
-                          <div className="business-detail-header">
-                            <div className="business-logo-badge">
-                              {selectedBusiness.businessLogoUrl ? (
-                                <img alt={selectedBusiness.businessName} src={selectedBusiness.businessLogoUrl} />
-                              ) : (
-                                selectedBusiness.businessName.slice(0, 1).toUpperCase()
-                              )}
-                            </div>
-                            <div>
-                              <h3>{selectedBusiness.businessName}</h3>
-                              <p className="muted-text">{selectedBusiness.ownerName}</p>
-                            </div>
-                          </div>
-                          <ul className="stack-list">
-                            <li>Category: {selectedBusiness.businessCategory || 'Not set'}</li>
-                            <li>
-                              Location:{' '}
-                              {[selectedBusiness.businessCity, selectedBusiness.businessState]
-                                .filter(Boolean)
-                                .join(', ') || 'Not set'}
-                            </li>
-                            <li>Website: {selectedBusiness.businessWebsite || 'Not set'}</li>
-                          </ul>
-                          {selectedBusiness.businessDescription ? (
-                            <p>{selectedBusiness.businessDescription}</p>
+                      <div className="business-detail-header">
+                        <div className="business-logo-badge">
+                          {selectedBusiness.businessLogoUrl ? (
+                            <img alt={selectedBusiness.businessName} src={selectedBusiness.businessLogoUrl} />
                           ) : (
-                            <p className="muted-text">No business description yet.</p>
+                            selectedBusiness.businessName.slice(0, 1).toUpperCase()
                           )}
                         </div>
-                      ) : (
-                        <p className="muted-text">No businesses match the current filters.</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="business-directory-grid">
-                    {filteredBusinessDirectoryItems.map((item) => (
-                      <button
-                        className={`card business-directory-card ${
-                          selectedBusiness?.id === item.id ? 'business-directory-card-active' : ''
-                        }`}
-                        key={item.id}
-                        onClick={() => setSelectedBusinessId(item.id)}
-                        type="button"
-                      >
-                        <div className="business-directory-card-top">
-                          <div className="business-logo-badge">
-                            {item.businessLogoUrl ? (
-                              <img alt={item.businessName} src={item.businessLogoUrl} />
-                            ) : (
-                              item.businessName.slice(0, 1).toUpperCase()
-                            )}
-                          </div>
+                        <div>
+                          <h3>{selectedBusiness.businessName}</h3>
+                          <p className="muted-text">{selectedBusiness.ownerName}</p>
+                        </div>
+                      </div>
+                      <div className="business-detail">
+                        {selectedBusiness.businessAbout ? (
                           <div>
-                            <strong>{item.businessName}</strong>
-                            <p className="muted-text">{item.ownerName}</p>
+                            <p className="eyebrow">About</p>
+                            <p>{selectedBusiness.businessAbout}</p>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessDescription ? (
+                          <div>
+                            <p className="eyebrow">Description</p>
+                            <p>{selectedBusiness.businessDescription}</p>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessCategory ? (
+                          <div>
+                            <p className="eyebrow">Category</p>
+                            <p>{selectedBusiness.businessCategory}</p>
+                          </div>
+                        ) : null}
+                        {[selectedBusiness.businessCity, selectedBusiness.businessState].filter(Boolean).join(', ') ? (
+                          <div>
+                            <p className="eyebrow">Location</p>
+                            <p>{[selectedBusiness.businessCity, selectedBusiness.businessState].filter(Boolean).join(', ')}</p>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessWebsite ? (
+                          <div>
+                            <p className="eyebrow">Website</p>
+                            <a href={selectedBusiness.businessWebsite} rel="noreferrer" target="_blank">
+                              {selectedBusiness.businessWebsite}
+                            </a>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessInstagram ? (
+                          <div>
+                            <p className="eyebrow">Instagram</p>
+                            <a href={selectedBusiness.businessInstagram} rel="noreferrer" target="_blank">
+                              {selectedBusiness.businessInstagram}
+                            </a>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessFacebook ? (
+                          <div>
+                            <p className="eyebrow">Facebook</p>
+                            <a href={selectedBusiness.businessFacebook} rel="noreferrer" target="_blank">
+                              {selectedBusiness.businessFacebook}
+                            </a>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessFamilyDiscountCode ? (
+                          <div>
+                            <p className="eyebrow">Family discount code</p>
+                            <p>{selectedBusiness.businessFamilyDiscountCode}</p>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessImages.length > 0 ? (
+                          <div>
+                            <p className="eyebrow">Images</p>
+                            <div className="media-grid">
+                              {selectedBusiness.businessImages.map((imageUrl) => (
+                                <figure className="media-card" key={imageUrl}>
+                                  <img alt={`${selectedBusiness.businessName} visual`} src={imageUrl} />
+                                </figure>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        {selectedBusiness.businessVideos.length > 0 ? (
+                          <div>
+                            <p className="eyebrow">Videos</p>
+                            <ul className="stack-list">
+                              {selectedBusiness.businessVideos.map((videoUrl) => (
+                                <li key={videoUrl}>
+                                  <a href={videoUrl} rel="noreferrer" target="_blank">
+                                    {videoUrl}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  ) : (
+                    <>
+                      <div className="dashboard-grid">
+                        <div className="card form-card">
+                          <label>
+                            Search
+                            <input
+                              className="text-input"
+                              onChange={(event) => setBusinessSearch(event.target.value)}
+                              placeholder="Search owner or business"
+                              type="text"
+                              value={businessSearch}
+                            />
+                          </label>
+                          <label>
+                            Category
+                            <select
+                              className="text-input"
+                              onChange={(event) => setBusinessCategoryFilter(event.target.value)}
+                              value={businessCategoryFilter}
+                            >
+                              {businessCategoryOptions.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            State
+                            <select
+                              className="text-input"
+                              onChange={(event) => setBusinessStateFilter(event.target.value)}
+                              value={businessStateFilter}
+                            >
+                              {businessStateOptions.map((option) => (
+                                <option key={option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <div className="status-callout">
+                            <strong>Results</strong>
+                            <p>
+                              {businessDirectoryMode === 'loading'
+                                ? 'Loading businesses...'
+                                : `${filteredBusinessDirectoryItems.length} business${
+                                    filteredBusinessDirectoryItems.length === 1 ? '' : 'es'
+                                  } found`}
+                            </p>
                           </div>
                         </div>
-                        <p className="muted-text">
-                          {[item.businessCity, item.businessState].filter(Boolean).join(', ') || 'Location not set'}
-                        </p>
-                        <p>{item.businessDescription || 'No description yet.'}</p>
-                        <span className="chip">{item.businessCategory || 'Uncategorized'}</span>
-                      </button>
-                    ))}
-                  </div>
+                        <div className="card">
+                          <p className="eyebrow">Selected Business</p>
+                          {selectedBusiness ? (
+                            <div className="business-detail">
+                              <div className="business-detail-header">
+                                <div className="business-logo-badge">
+                                  {selectedBusiness.businessLogoUrl ? (
+                                    <img alt={selectedBusiness.businessName} src={selectedBusiness.businessLogoUrl} />
+                                  ) : (
+                                    selectedBusiness.businessName.slice(0, 1).toUpperCase()
+                                  )}
+                                </div>
+                                <div>
+                                  <h3>{selectedBusiness.businessName}</h3>
+                                  <p className="muted-text">{selectedBusiness.ownerName}</p>
+                                </div>
+                              </div>
+                              <button className="primary-button" onClick={() => setIsBusinessProfileOpen(true)} type="button">
+                                Open full business page
+                              </button>
+                            </div>
+                          ) : (
+                            <p className="muted-text">No businesses match the current filters.</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="business-directory-grid">
+                        {filteredBusinessDirectoryItems.map((item) => (
+                          <button
+                            className={`card business-directory-card ${
+                              selectedBusiness?.id === item.id ? 'business-directory-card-active' : ''
+                            }`}
+                            key={item.id}
+                            onClick={() => {
+                              setSelectedBusinessId(item.id)
+                              setIsBusinessProfileOpen(true)
+                            }}
+                            type="button"
+                          >
+                            <div className="business-directory-card-top">
+                              <div className="business-logo-badge">
+                                {item.businessLogoUrl ? (
+                                  <img alt={item.businessName} src={item.businessLogoUrl} />
+                                ) : (
+                                  item.businessName.slice(0, 1).toUpperCase()
+                                )}
+                              </div>
+                              <div>
+                                <strong>{item.businessName}</strong>
+                                <p className="muted-text">{item.ownerName}</p>
+                              </div>
+                            </div>
+                            <p className="muted-text">
+                              {[item.businessCity, item.businessState].filter(Boolean).join(', ') || 'Location not set'}
+                            </p>
+                            <p>{item.businessDescription || item.businessAbout || 'Open to view full business page.'}</p>
+                            {item.businessCategory ? <span className="chip">{item.businessCategory}</span> : null}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </section>
               ) : workspaceView === 'map' ? (
                 <Suspense fallback={<section className="workspace-panel"><div className="card"><p className="muted-text">Loading map...</p></div></section>}>
@@ -7275,6 +7445,15 @@ function App() {
                               />
                             </label>
                             <label>
+                              About
+                              <input
+                                className="text-input"
+                                onChange={(event) => updateProfileField('businessAbout', event.target.value)}
+                                type="text"
+                                value={profileForm.businessAbout}
+                              />
+                            </label>
+                            <label>
                               Business city
                               <input
                                 className="text-input"
@@ -7327,6 +7506,33 @@ function App() {
                               onChange={(event) => updateProfileField('businessDescription', event.target.value)}
                               rows={4}
                               value={profileForm.businessDescription}
+                            />
+                          </label>
+                          <label>
+                            Business images (one URL per line)
+                            <textarea
+                              className="text-input text-area"
+                              onChange={(event) => updateProfileField('businessImages', event.target.value)}
+                              rows={4}
+                              value={profileForm.businessImages}
+                            />
+                          </label>
+                          <label>
+                            Business videos (one URL per line)
+                            <textarea
+                              className="text-input text-area"
+                              onChange={(event) => updateProfileField('businessVideos', event.target.value)}
+                              rows={4}
+                              value={profileForm.businessVideos}
+                            />
+                          </label>
+                          <label>
+                            Family discount code (optional)
+                            <input
+                              className="text-input"
+                              onChange={(event) => updateProfileField('businessFamilyDiscountCode', event.target.value)}
+                              type="text"
+                              value={profileForm.businessFamilyDiscountCode}
                             />
                           </label>
                           <button className="primary-button wide-button" disabled={profileMode === 'saving'} type="submit">
@@ -7484,20 +7690,27 @@ function App() {
                           {profileTab === 'business' ? (
                             <div className="card">
                               <p className="eyebrow">Business</p>
-                              <ul className="stack-list">
-                                <li>Business name: {profileRecord.business_name || 'Not set'}</li>
-                                <li>Logo URL: {profileRecord.business_logo_url || 'Not set'}</li>
-                                <li>Category: {profileRecord.business_category || 'Not set'}</li>
-                                <li>Website: {profileRecord.business_website || 'Not set'}</li>
-                                <li>
-                                  Location:{' '}
-                                  {[profileRecord.business_city, profileRecord.business_state]
-                                    .filter(Boolean)
-                                    .join(', ') || 'Not set'}
-                                </li>
-                                <li>Instagram: {profileRecord.business_instagram || 'Not set'}</li>
-                                <li>Facebook: {profileRecord.business_facebook || 'Not set'}</li>
-                              </ul>
+                              {profileRecord.business_name ? (
+                                <ul className="stack-list">
+                                  <li>Business name: {profileRecord.business_name}</li>
+                                  {profileRecord.business_about ? <li>About: {profileRecord.business_about}</li> : null}
+                                  {profileRecord.business_category ? <li>Category: {profileRecord.business_category}</li> : null}
+                                  {[profileRecord.business_city, profileRecord.business_state].filter(Boolean).join(', ') ? (
+                                    <li>
+                                      Location:{' '}
+                                      {[profileRecord.business_city, profileRecord.business_state].filter(Boolean).join(', ')}
+                                    </li>
+                                  ) : null}
+                                  {profileRecord.business_website ? <li>Website: {profileRecord.business_website}</li> : null}
+                                  {profileRecord.business_instagram ? <li>Instagram: {profileRecord.business_instagram}</li> : null}
+                                  {profileRecord.business_facebook ? <li>Facebook: {profileRecord.business_facebook}</li> : null}
+                                  {profileRecord.business_family_discount_code ? (
+                                    <li>Family discount code: {profileRecord.business_family_discount_code}</li>
+                                  ) : null}
+                                </ul>
+                              ) : (
+                                <p className="muted-text">No business profile yet.</p>
+                              )}
                               {profileRecord.business_description ? <p>{profileRecord.business_description}</p> : null}
                             </div>
                           ) : null}

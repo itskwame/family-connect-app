@@ -619,6 +619,18 @@
   gap: 1rem;
 }
 
+.business-profile-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.business-profile-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
 .participant-picker,
 .conversation-stack,
 .chat-composer-column,
