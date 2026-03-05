@@ -176,8 +176,8 @@ const FAMILY_NAME_STORAGE_KEY = 'family-connect.current-family-name'
 const PERSON_ID_STORAGE_KEY = 'family-connect.current-person-id'
 const PERSON_NAME_STORAGE_KEY = 'family-connect.current-person-name'
 const DEV_NO_AUTH_TEST_MODE = import.meta.env.VITE_DEV_NO_AUTH === 'true'
-const DEV_TEST_FAMILY_ID = 'dev-family-local'
-const DEV_TEST_PERSON_ID = 'dev-person-local'
+const DEV_TEST_FAMILY_ID = 'dev-family-mark-white'
+const DEV_TEST_PERSON_ID = 'person-great-1-1-1'
 
 function createInviteToken() {
   const randomPart =
@@ -436,6 +436,521 @@ function buildProfileForm(record: ProfileRecord) {
   }
 }
 
+function buildDevWhiteFamilySeed() {
+  const familyId = DEV_TEST_FAMILY_ID
+  const now = Date.now()
+  const locations = [
+    { city: 'Atlanta', state: 'GA', zip: '30301', latitude: 33.749, longitude: -84.388 },
+    { city: 'Charlotte', state: 'NC', zip: '28202', latitude: 35.227, longitude: -80.843 },
+    { city: 'Dallas', state: 'TX', zip: '75201', latitude: 32.7767, longitude: -96.797 },
+    { city: 'Houston', state: 'TX', zip: '77002', latitude: 29.7604, longitude: -95.3698 },
+    { city: 'Orlando', state: 'FL', zip: '32801', latitude: 28.5383, longitude: -81.3792 },
+    { city: 'Nashville', state: 'TN', zip: '37201', latitude: 36.1627, longitude: -86.7816 },
+    { city: 'Chicago', state: 'IL', zip: '60601', latitude: 41.8781, longitude: -87.6298 },
+    { city: 'Los Angeles', state: 'CA', zip: '90012', latitude: 34.0522, longitude: -118.2437 },
+  ]
+
+  const peopleMeta = new Map<
+    string,
+    {
+      id: string
+      first_name: string
+      last_name: string
+      gender: string | null
+      birth_date: string | null
+      city: string | null
+      state: string | null
+      zip: string | null
+      business_name: string | null
+      business_category?: string | null
+      business_description?: string | null
+      business_city?: string | null
+      business_state?: string | null
+      business_website?: string | null
+    }
+  >()
+  const people: TreePersonItem[] = []
+  const relationships: TreeRelationshipItem[] = []
+  let relationshipCounter = 1
+  let locationCursor = 0
+
+  const addPerson = (
+    id: string,
+    firstName: string,
+    lastName: string,
+    gender: string,
+    birthDate: string,
+    businessName: string | null = null
+  ) => {
+    const location = locations[locationCursor % locations.length]
+    locationCursor += 1
+    const personRecord = {
+      id,
+      first_name: firstName,
+      last_name: lastName,
+      gender,
+      birth_date: birthDate,
+      city: location.city,
+      state: location.state,
+      zip: location.zip,
+      business_name: businessName,
+      business_category: businessName ? 'Family Business' : null,
+      business_description: businessName
+        ? `${businessName} is part of the White family business directory seed data.`
+        : null,
+      business_city: businessName ? location.city : null,
+      business_state: businessName ? location.state : null,
+      business_website: businessName ? `https://${businessName.toLowerCase().replace(/\s+/g, '')}.example.com` : null,
+    }
+
+    peopleMeta.set(id, personRecord)
+    people.push({
+      id,
+      first_name: firstName,
+      last_name: lastName,
+      gender,
+      birth_date: birthDate,
+      city: location.city,
+      state: location.state,
+      business_name: businessName,
+    })
+  }
+
+  const addRelationship = (personAId: string, personBId: string, relationshipType: string) => {
+    relationships.push({
+      id: `rel-${relationshipCounter}`,
+      person_a_id: personAId,
+      person_b_id: personBId,
+      relationship_type: relationshipType,
+      locked: true,
+    })
+    relationshipCounter += 1
+  }
+
+  addPerson('person-mark-white-sr', 'Mark', 'White', 'Male', '1938-04-14', 'White Family Holdings')
+  addPerson('person-spouse-1', 'Evelyn', 'White', 'Female', '1942-07-09', null)
+  addPerson('person-spouse-2', 'Donna', 'White', 'Female', '1947-02-18', null)
+  addRelationship('person-mark-white-sr', 'person-spouse-1', 'spouse')
+  addRelationship('person-mark-white-sr', 'person-spouse-2', 'spouse')
+
+  const childNames = [
+    { first: 'Mark', last: 'White Jr', gender: 'Male' },
+    { first: 'Angela', last: 'White', gender: 'Female' },
+    { first: 'Benjamin', last: 'White', gender: 'Male' },
+    { first: 'Carla', last: 'White', gender: 'Female' },
+    { first: 'Derrick', last: 'White', gender: 'Male' },
+    { first: 'Elaine', last: 'White', gender: 'Female' },
+    { first: 'Frank', last: 'White', gender: 'Male' },
+    { first: 'Gloria', last: 'White', gender: 'Female' },
+    { first: 'Harold', last: 'White', gender: 'Male' },
+    { first: 'Irene', last: 'White', gender: 'Female' },
+    { first: 'James', last: 'White', gender: 'Male' },
+    { first: 'Karen', last: 'White', gender: 'Female' },
+    { first: 'Leon', last: 'White', gender: 'Male' },
+    { first: 'Monica', last: 'White', gender: 'Female' },
+    { first: 'Nathan', last: 'White', gender: 'Male' },
+    { first: 'Olivia', last: 'White', gender: 'Female' },
+    { first: 'Patrick', last: 'White', gender: 'Male' },
+    { first: 'Queenie', last: 'White', gender: 'Female' },
+  ]
+
+  const markJrChildren = ['Eric', 'Melissa', 'David', 'Nina']
+  const businesses: BusinessDirectoryItem[] = []
+  const currentPersonId = DEV_TEST_PERSON_ID
+  let currentPersonName = 'Jordan White'
+
+  childNames.forEach((child, childIndex) => {
+    const childId = `person-child-${childIndex + 1}`
+    const childSpouseId = `person-child-spouse-${childIndex + 1}`
+    const parentSpouseId = childIndex < 9 ? 'person-spouse-1' : 'person-spouse-2'
+    const childBirthYear = 1962 + childIndex
+
+    addPerson(
+      childId,
+      child.first,
+      child.last,
+      child.gender,
+      `${childBirthYear}-05-12`,
+      childIndex % 4 === 0 ? `${child.first} ${child.last} Ventures` : null
+    )
+    addPerson(
+      childSpouseId,
+      `${child.first}Partner`,
+      child.last === 'White Jr' ? 'Carter' : child.last,
+      child.gender === 'Male' ? 'Female' : 'Male',
+      `${childBirthYear + 2}-08-20`
+    )
+
+    addRelationship('person-mark-white-sr', childId, 'parent')
+    addRelationship(parentSpouseId, childId, 'parent')
+    addRelationship(childId, childSpouseId, 'spouse')
+
+    const grandchildCount = child.first === 'Mark' ? 4 : 2
+
+    for (let grandchildIndex = 0; grandchildIndex < grandchildCount; grandchildIndex += 1) {
+      const grandchildId = `person-grand-${childIndex + 1}-${grandchildIndex + 1}`
+      const grandchildSpouseId = `person-grand-spouse-${childIndex + 1}-${grandchildIndex + 1}`
+      const grandchildBirthYear = childBirthYear + 24 + grandchildIndex
+
+      const grandchildFirstName =
+        child.first === 'Mark'
+          ? markJrChildren[grandchildIndex]
+          : `${child.first}${grandchildIndex + 1}`
+      const grandchildGender = grandchildIndex % 2 === 0 ? 'Male' : 'Female'
+
+      addPerson(
+        grandchildId,
+        grandchildFirstName,
+        'White',
+        grandchildGender,
+        `${grandchildBirthYear}-03-15`,
+        grandchildIndex === 0 && childIndex % 3 === 0 ? `${grandchildFirstName} White Studio` : null
+      )
+      addPerson(
+        grandchildSpouseId,
+        `${grandchildFirstName}Spouse`,
+        grandchildFirstName === 'Eric' ? 'White' : 'Lane',
+        grandchildGender === 'Male' ? 'Female' : 'Male',
+        `${grandchildBirthYear + 1}-11-08`
+      )
+
+      addRelationship(childId, grandchildId, 'parent')
+      addRelationship(childSpouseId, grandchildId, 'parent')
+      addRelationship(grandchildId, grandchildSpouseId, 'spouse')
+
+      for (let greatGrandchildIndex = 0; greatGrandchildIndex < 2; greatGrandchildIndex += 1) {
+        const greatGrandchildId = `person-great-${childIndex + 1}-${grandchildIndex + 1}-${greatGrandchildIndex + 1}`
+        const greatGrandchildBirthYear = grandchildBirthYear + 23 + greatGrandchildIndex
+        const greatGrandchildFirstName =
+          grandchildFirstName === 'Eric'
+            ? greatGrandchildIndex === 0
+              ? 'Jordan'
+              : 'Emma'
+            : `${grandchildFirstName}Kid${greatGrandchildIndex + 1}`
+
+        addPerson(
+          greatGrandchildId,
+          greatGrandchildFirstName,
+          'White',
+          greatGrandchildIndex % 2 === 0 ? 'Male' : 'Female',
+          `${greatGrandchildBirthYear}-09-03`
+        )
+
+        addRelationship(grandchildId, greatGrandchildId, 'parent')
+        addRelationship(grandchildSpouseId, greatGrandchildId, 'parent')
+
+        if (greatGrandchildId === currentPersonId) {
+          currentPersonName = `${greatGrandchildFirstName} White`
+        }
+      }
+    }
+  })
+
+  for (const person of peopleMeta.values()) {
+    if (person.business_name) {
+      businesses.push({
+        id: person.id,
+        ownerName: `${person.first_name} ${person.last_name}`.trim(),
+        businessName: person.business_name,
+        businessLogoUrl: null,
+        businessCategory: person.business_category ?? null,
+        businessDescription: person.business_description ?? null,
+        businessCity: person.business_city ?? person.city ?? null,
+        businessState: person.business_state ?? person.state ?? null,
+        businessWebsite: person.business_website ?? null,
+      })
+    }
+  }
+
+  const profileSource = peopleMeta.get(currentPersonId)
+  const profile: ProfileRecord = {
+    id: currentPersonId,
+    first_name: profileSource?.first_name ?? 'Jordan',
+    last_name: profileSource?.last_name ?? 'White',
+    gender: profileSource?.gender ?? 'Male',
+    birth_date: profileSource?.birth_date ?? '2001-09-03',
+    city: profileSource?.city ?? 'Atlanta',
+    state: profileSource?.state ?? 'GA',
+    zip: profileSource?.zip ?? '30301',
+    bio: 'Temporary seeded profile for testing the full app experience.',
+    contact_email: 'jordan.white@example.com',
+    contact_phone: '555-0137',
+    profile_photo_url: null,
+    business_name: null,
+    business_logo_url: null,
+    business_category: null,
+    business_description: null,
+    business_city: null,
+    business_state: null,
+    business_website: null,
+    business_instagram: null,
+    business_facebook: null,
+  }
+
+  const peopleOptions: PersonOption[] = people
+    .map((person) => ({
+      id: person.id,
+      name: `${person.first_name} ${person.last_name}`.trim(),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+
+  const clusterMap = new Map<string, FamilyMapCluster>()
+  for (const person of peopleMeta.values()) {
+    const city = person.city ?? ''
+    const state = person.state ?? ''
+    const zip = person.zip ?? ''
+    const key = `${city}|${state}|${zip}`
+    const location = locations.find(
+      (item) => item.city === city && item.state === state && item.zip === zip
+    )
+    if (!location) {
+      continue
+    }
+
+    const existing = clusterMap.get(key)
+    if (existing) {
+      existing.count += 1
+      existing.peopleNames.push(`${person.first_name} ${person.last_name}`.trim())
+      continue
+    }
+
+    clusterMap.set(key, {
+      id: `cluster-${clusterMap.size + 1}`,
+      label: `${city}, ${state}`,
+      city,
+      state,
+      zip,
+      count: 1,
+      peopleNames: [`${person.first_name} ${person.last_name}`.trim()],
+      latitude: location.latitude,
+      longitude: location.longitude,
+    })
+  }
+
+  const familyConversationId = 'conv-family-chat'
+  const directConversationId = 'conv-direct-eric'
+  const messages: MessageItem[] = [
+    {
+      id: 'msg-1',
+      sender_person_id: 'person-grand-1-1',
+      content: 'Family reunion is this Saturday at 2 PM.',
+      media_url: null,
+      created_at: new Date(now - 1000 * 60 * 45).toISOString(),
+      read_at: new Date(now - 1000 * 60 * 10).toISOString(),
+    },
+    {
+      id: 'msg-2',
+      sender_person_id: currentPersonId,
+      content: 'I can bring dessert and drinks.',
+      media_url: null,
+      created_at: new Date(now - 1000 * 60 * 30).toISOString(),
+      read_at: new Date(now - 1000 * 60 * 30).toISOString(),
+    },
+    {
+      id: 'msg-3',
+      sender_person_id: 'person-grand-1-1',
+      content: 'Perfect. Please invite your siblings too.',
+      media_url: null,
+      created_at: new Date(now - 1000 * 60 * 12).toISOString(),
+      read_at: null,
+    },
+  ]
+
+  return {
+    familyId,
+    familyName: 'The White Family',
+    currentPersonId,
+    currentPersonName,
+    rootId: 'person-mark-white-sr',
+    inviteToken: 'JOIN-WHITE-DEV-2026',
+    people,
+    relationships,
+    profile,
+    connections: [
+      { id: 'con-1', name: 'Eric White', relationshipLabel: 'Father' },
+      { id: 'con-2', name: 'EricSpouse White', relationshipLabel: 'Mother' },
+      { id: 'con-3', name: 'Emma White', relationshipLabel: 'Sibling' },
+      { id: 'con-4', name: 'Mark White Jr', relationshipLabel: 'Grandfather' },
+    ],
+    timeline: [
+      { id: 'timeline-1', event_type: 'birth', event_date: '2001-09-03', description: 'Born in Atlanta, GA.' },
+      { id: 'timeline-2', event_type: 'school', event_date: '2019-05-22', description: 'Graduated high school.' },
+      { id: 'timeline-3', event_type: 'career', event_date: '2024-06-01', description: 'Started first full-time role.' },
+    ],
+    media: [
+      {
+        id: 'media-1',
+        media_url: 'https://images.unsplash.com/photo-1511895426328-dc8714191300?auto=format&fit=crop&w=1200&q=80',
+        caption: 'Family cookout',
+      },
+      {
+        id: 'media-2',
+        media_url: 'https://images.unsplash.com/photo-1472396961693-142e6e269027?auto=format&fit=crop&w=1200&q=80',
+        caption: 'Reunion day',
+      },
+    ],
+    peopleOptions,
+    businesses,
+    familyMapClusters: Array.from(clusterMap.values()),
+    feedPosts: [
+      {
+        id: 'post-1',
+        authorPersonId: 'person-mark-white-sr',
+        authorName: 'Mark White',
+        content: 'Welcome to the new family space. Keep the tree updated as we grow.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 60 * 3).toISOString(),
+        likeCount: 8,
+        commentCount: 3,
+        likedByMe: true,
+      },
+      {
+        id: 'post-2',
+        authorPersonId: 'person-grand-1-1',
+        authorName: 'Eric White',
+        content: 'I uploaded photos from last year’s reunion.',
+        mediaUrl: 'https://images.unsplash.com/photo-1511988617509-a57c8a288659?auto=format&fit=crop&w=1200&q=80',
+        createdAt: new Date(now - 1000 * 60 * 95).toISOString(),
+        likeCount: 5,
+        commentCount: 1,
+        likedByMe: false,
+      },
+      {
+        id: 'post-3',
+        authorPersonId: currentPersonId,
+        authorName: currentPersonName,
+        content: 'Testing Pathfinder now that we have multiple generations loaded.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 30).toISOString(),
+        likeCount: 2,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-4',
+        authorPersonId: 'person-child-1',
+        authorName: 'Mark White Jr',
+        content: 'Eric, Melissa, David, and Nina are all added now. Check your branches.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 80).toISOString(),
+        likeCount: 9,
+        commentCount: 2,
+        likedByMe: false,
+      },
+      {
+        id: 'post-5',
+        authorPersonId: 'person-child-2',
+        authorName: 'Angela White',
+        content: 'Family cookout is this Sunday. RSVP in chat.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 70).toISOString(),
+        likeCount: 6,
+        commentCount: 1,
+        likedByMe: false,
+      },
+      {
+        id: 'post-6',
+        authorPersonId: 'person-child-3',
+        authorName: 'Benjamin White',
+        content: 'I updated business details in the directory.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 60).toISOString(),
+        likeCount: 5,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-7',
+        authorPersonId: 'person-child-4',
+        authorName: 'Carla White',
+        content: 'Map view looks great with our city clusters.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 50).toISOString(),
+        likeCount: 4,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-8',
+        authorPersonId: 'person-child-5',
+        authorName: 'Derrick White',
+        content: 'Added two more cousins and linked their parents.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 45).toISOString(),
+        likeCount: 4,
+        commentCount: 1,
+        likedByMe: false,
+      },
+      {
+        id: 'post-9',
+        authorPersonId: 'person-child-6',
+        authorName: 'Elaine White',
+        content: 'Testing export presets now. Poster size looks clean.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 40).toISOString(),
+        likeCount: 3,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-10',
+        authorPersonId: 'person-child-7',
+        authorName: 'Frank White',
+        content: 'Please verify your profile details before the reunion.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 35).toISOString(),
+        likeCount: 2,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-11',
+        authorPersonId: 'person-child-8',
+        authorName: 'Gloria White',
+        content: 'Pathfinder now correctly shows how we are connected.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 25).toISOString(),
+        likeCount: 2,
+        commentCount: 0,
+        likedByMe: false,
+      },
+      {
+        id: 'post-12',
+        authorPersonId: 'person-child-9',
+        authorName: 'Harold White',
+        content: 'I can see all generations from Mark White in Tree view.',
+        mediaUrl: null,
+        createdAt: new Date(now - 1000 * 60 * 20).toISOString(),
+        likeCount: 1,
+        commentCount: 0,
+        likedByMe: false,
+      },
+    ],
+    upcomingBirthdaysCount: 14,
+    newMembersCount: 6,
+    conversations: [
+      {
+        id: familyConversationId,
+        type: 'family',
+        title: 'Family Chat',
+        participantIds: ['person-mark-white-sr', 'person-grand-1-1', currentPersonId],
+        preview: 'Perfect. Please invite your siblings too.',
+        unreadCount: 1,
+      },
+      {
+        id: directConversationId,
+        type: 'direct',
+        title: 'Eric White',
+        participantIds: ['person-grand-1-1', currentPersonId],
+        preview: 'Can you review the new tree branch tonight?',
+        unreadCount: 0,
+      },
+    ] as ConversationListItem[],
+    selectedConversationId: familyConversationId,
+    messages,
+  }
+}
+
 function App() {
   const [route, setRoute] = useState<Route>(DEV_NO_AUTH_TEST_MODE ? 'workspace' : 'landing')
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('home')
@@ -613,27 +1128,47 @@ function App() {
 
     setAuthReady(true)
     setIsAuthenticated(true)
+    const seed = buildDevWhiteFamilySeed()
 
-    if (!currentFamilyId) {
-      setCurrentFamilyId(DEV_TEST_FAMILY_ID)
-    }
-
-    if (!familyName.trim()) {
-      setFamilyName('Demo Family')
-    }
-
-    if (!currentPersonId) {
-      setCurrentPersonId(DEV_TEST_PERSON_ID)
-    }
-
-    if (!currentPersonName.trim()) {
-      setCurrentPersonName('Demo Tester')
-    }
-
-    if (route === 'landing' || route === 'signup' || route === 'login') {
-      setRoute('workspace')
-    }
-  }, [currentFamilyId, currentPersonId, currentPersonName, familyName, route])
+    setCurrentFamilyId(seed.familyId)
+    setFamilyName(seed.familyName)
+    setCurrentInviteToken(seed.inviteToken)
+    setCurrentPersonId(seed.currentPersonId)
+    setCurrentPersonName(seed.currentPersonName)
+    setPeopleOptions(seed.peopleOptions)
+    setTreePeople(seed.people)
+    setTreeRelationships(seed.relationships)
+    setTreeRootId(seed.rootId)
+    setSelectedTreePersonId(seed.currentPersonId)
+    setPathfinderPersonAId(seed.currentPersonId)
+    setProfileRecord(seed.profile)
+    setProfileForm(buildProfileForm(seed.profile))
+    setConnections(seed.connections)
+    setTimelineItems(seed.timeline)
+    setMediaItems(seed.media)
+    setBusinessDirectoryItems(seed.businesses)
+    setSelectedBusinessId(seed.businesses[0]?.id ?? '')
+    setFamilyMapClusters(seed.familyMapClusters)
+    setSelectedMapClusterId(seed.familyMapClusters[0]?.id ?? '')
+    setFeedPosts(seed.feedPosts)
+    setUpcomingBirthdaysCount(seed.upcomingBirthdaysCount)
+    setNewMembersCount(seed.newMembersCount)
+    setConversations(seed.conversations)
+    setSelectedConversationId(seed.selectedConversationId)
+    setMessages(seed.messages)
+    setExportRootId(seed.rootId)
+    setStatus(
+      'Testing mode loaded: Mark White family seed dataset is active (18 children with descendants).'
+    )
+    setHomeError('')
+    setMessagingError('')
+    setTreeError('')
+    setMapError('')
+    setProfileError('')
+    setBusinessDirectoryError('')
+    setPathfinderError('')
+    setRoute('workspace')
+  }, [])
 
   useEffect(() => {
     if (DEV_NO_AUTH_TEST_MODE) {
@@ -729,6 +1264,10 @@ function App() {
   }, [familyName])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId || familyName) {
@@ -763,6 +1302,10 @@ function App() {
   }, [currentFamilyId, familyName, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentPersonId || currentPersonName) {
@@ -797,6 +1340,10 @@ function App() {
   }, [currentPersonId, currentPersonName, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentPersonId) {
@@ -844,6 +1391,10 @@ function App() {
   }, [currentPersonId, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentPersonId || !currentFamilyId) {
@@ -972,6 +1523,10 @@ function App() {
   }, [currentFamilyId, currentPersonId, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId) {
@@ -2304,6 +2859,10 @@ function App() {
   }, [selectedTreeGraph, treeFlowInstance])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId) {
@@ -2359,6 +2918,10 @@ function App() {
   }, [currentFamilyId, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId) {
@@ -2479,6 +3042,10 @@ function App() {
     null
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId || !currentPersonId) {
@@ -2594,6 +3161,10 @@ function App() {
   }, [currentFamilyId, currentPersonId, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !currentFamilyId || !currentPersonId) {
@@ -2796,6 +3367,10 @@ function App() {
   }, [currentFamilyId, currentPersonId, isAuthenticated])
 
   useEffect(() => {
+    if (DEV_NO_AUTH_TEST_MODE) {
+      return
+    }
+
     const client = getSupabaseClient()
 
     if (!client || !isAuthenticated || !selectedConversationId) {
@@ -5246,7 +5821,17 @@ function App() {
                 ) : null}
               </div>
             </div>
-            <button className="secondary-button">Settings</button>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setWorkspaceView('profile')
+                setProfileTab('overview')
+                setIsEditingProfile(false)
+              }}
+              type="button"
+            >
+              Settings
+            </button>
           </div>
 
           <div className="workspace-body">
@@ -6865,11 +7450,12 @@ function App() {
 
   if (route === 'signup') return renderAuth('signup')
   if (route === 'login') return renderAuth('login')
-  if (route === 'family') return isAuthenticated ? renderFamilySetup() : <div className="app-page">{renderLanding()}</div>
+  if (route === 'family')
+    return isAuthenticated || DEV_NO_AUTH_TEST_MODE ? renderFamilySetup() : <div className="app-page">{renderLanding()}</div>
   if (route === 'onboarding')
-    return isAuthenticated ? renderOnboarding() : <div className="app-page">{renderLanding()}</div>
+    return isAuthenticated || DEV_NO_AUTH_TEST_MODE ? renderOnboarding() : <div className="app-page">{renderLanding()}</div>
   if (route === 'workspace')
-    return isAuthenticated ? renderWorkspace() : <div className="app-page">{renderLanding()}</div>
+    return isAuthenticated || DEV_NO_AUTH_TEST_MODE ? renderWorkspace() : <div className="app-page">{renderLanding()}</div>
 
   return <div className="app-page">{renderLanding()}</div>
 }
