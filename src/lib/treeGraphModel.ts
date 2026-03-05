@@ -154,13 +154,14 @@ export function buildTreeGraphModel({
   const layoutEdges: LayoutEdgeInput[] = []
 
   const registerPersonNode = (personId: string) => {
-    if (nodeIds.has(personId)) {
+    const nodeId = `P:${personId}`
+    if (nodeIds.has(nodeId)) {
       return
     }
 
-    nodeIds.add(personId)
+    nodeIds.add(nodeId)
     layoutNodes.push({
-      id: `P:${personId}`,
+      id: nodeId,
       type: 'person',
       width: 190,
       height: 112,
@@ -326,4 +327,3 @@ export function buildTreeSvgFromLayout({
     nodeCount: nodes.filter((node) => node.type === 'person').length,
   }
 }
-

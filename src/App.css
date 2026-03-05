@@ -937,11 +937,36 @@
 }
 
 .tree-flow-connector {
-  width: 18px;
+  position: relative;
+  width: 28px;
   height: 18px;
+  display: grid;
+  place-items: center;
+}
+
+.tree-flow-marriage-bar {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  height: 2px;
+  border-radius: 999px;
+  background: #b45309;
+  box-shadow: 0 0 0 2px rgba(180, 83, 9, 0.12);
+}
+
+.tree-flow-union-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 999px;
   background: linear-gradient(135deg, rgba(47, 184, 163, 0.45), rgba(31, 42, 68, 0.5));
-  box-shadow: 0 0 0 4px rgba(47, 184, 163, 0.1);
+  box-shadow: 0 0 0 3px rgba(47, 184, 163, 0.12);
+}
+
+.tree-generation-guide-line {
+  width: 100%;
+  height: 2px;
+  border-top: 1px dashed rgba(31, 42, 68, 0.16);
+  border-bottom: 1px solid rgba(47, 184, 163, 0.08);
 }
 
 .tree-flow-node-root {

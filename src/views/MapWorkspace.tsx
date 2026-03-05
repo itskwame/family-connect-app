@@ -626,7 +626,7 @@ export default function MapWorkspace({
                         </Popup>
                     </CircleMarker>
                   ))
-                : cityClusters
+                : filteredCityClusters
                     .map((cityCluster) => (
                       <CircleMarker
                         center={[cityCluster.latitude, cityCluster.longitude]}

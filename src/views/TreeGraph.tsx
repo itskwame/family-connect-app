@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import ReactFlow, { Background, Controls, Position } from 'reactflow'
 import type { Edge, Node, ReactFlowInstance } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { layoutTree } from '../lib/layoutTree'
 import { buildTreeGraphModel } from '../lib/treeGraphModel'
+import type { PositionedLayoutEdge } from '../lib/layoutTree'
 
 type TreePerson = {
   id: string
@@ -45,6 +47,35 @@ export default function TreeGraph({
   const [layoutNodes, setLayoutNodes] = useState<Node[]>([])
   const [layoutEdges, setLayoutEdges] = useState<Edge[]>([])
 
+  const edgeTypes = useMemo(
+    () => ({
+      orthogonal: ({
+        id,
+        data,
+        style,
+      }: {
+        id: string
+        data?: { points?: Array<{ x: number; y: number }> }
+        style?: CSSProperties
+      }) => {
+        const points = data?.points ?? []
+        if (points.length < 2) {
+          return null
+        }
+        const path = points
+          .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`)
+          .join(' ')
+
+        return (
+          <g className="react-flow__edge">
+            <path id={id} className="react-flow__edge-path" d={path} fill="none" style={style} />
+          </g>
+        )
+      },
+    }),
+    []
+  )
+
   const model = useMemo(
     () =>
       buildTreeGraphModel({
@@ -65,7 +96,7 @@ export default function TreeGraph({
         return
       }
 
-      const nodes: Node[] = laidOut.nodes.map((node) => {
+      const baseNodes: Node[] = laidOut.nodes.map((node) => {
         if (node.type === 'union') {
           return {
             id: node.id,
@@ -74,8 +105,14 @@ export default function TreeGraph({
             selectable: false,
             sourcePosition: Position.Bottom,
             targetPosition: Position.Top,
+            style: { width: node.width, height: node.height, border: 'none', background: 'transparent' },
             data: {
-              label: <div className="tree-flow-connector" aria-hidden="true" />,
+              label: (
+                <div className="tree-flow-connector" aria-hidden="true">
+                  <span className="tree-flow-marriage-bar" />
+                  <span className="tree-flow-union-dot" />
+                </div>
+              ),
             },
           }
         }
@@ -97,6 +134,7 @@ export default function TreeGraph({
           selectable: true,
           sourcePosition: Position.Bottom,
           targetPosition: Position.Top,
+          style: { width: node.width, height: node.height, border: 'none', background: 'transparent' },
           data: {
             label: (
               <div
@@ -113,22 +151,50 @@ export default function TreeGraph({
         }
       })
 
-      const edges: Edge[] = laidOut.edges.map((edge) => {
+      const personLayoutNodes = laidOut.nodes.filter((node) => node.type === 'person')
+      const uniqueGenerationRows = Array.from(
+        new Set(personLayoutNodes.map((node) => Math.round(node.y)))
+      ).sort((left, right) => left - right)
+      const minX = laidOut.nodes.reduce((acc, node) => Math.min(acc, node.x), Number.POSITIVE_INFINITY)
+      const maxX = laidOut.nodes.reduce(
+        (acc, node) => Math.max(acc, node.x + node.width),
+        Number.NEGATIVE_INFINITY
+      )
+      const guideWidth = Number.isFinite(minX) && Number.isFinite(maxX) ? Math.max(maxX - minX + 140, 320) : 320
+      const guideStartX = Number.isFinite(minX) ? minX - 70 : -70
+      const generationGuideNodes: Node[] = uniqueGenerationRows.map((rowY, index) => ({
+        id: `G:${index}`,
+        position: { x: guideStartX, y: rowY + 56 },
+        draggable: false,
+        selectable: false,
+        focusable: false,
+        style: {
+          width: guideWidth,
+          height: 2,
+          border: 'none',
+          background: 'transparent',
+          boxShadow: 'none',
+          pointerEvents: 'none',
+          zIndex: 0,
+        },
+        data: {
+          label: <div className="tree-generation-guide-line" aria-hidden="true" />,
+        },
+      }))
+      const nodes: Node[] = [...generationGuideNodes, ...baseNodes]
+
+      const edges: Edge[] = laidOut.edges.map((edge: PositionedLayoutEdge) => {
         const isSpouse = edge.relationType === 'spouse'
-        const label =
-          edge.relationType === 'step_parent'
-            ? 'step parent'
-            : edge.relationType === 'adopted_parent'
-              ? 'adoptive parent'
-              : edge.relationType
 
         return {
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: isSpouse ? 'straight' : 'smoothstep',
-          label: isSpouse ? '' : label,
+          type: 'orthogonal',
           animated: false,
+          data: {
+            points: edge.points,
+          },
           style: isSpouse
             ? { strokeWidth: 2, stroke: '#b45309' }
             : edge.relationType === 'step_parent'
@@ -136,14 +202,12 @@ export default function TreeGraph({
               : edge.relationType === 'adopted_parent'
                 ? { strokeWidth: 2.5, stroke: '#059669', strokeDasharray: '4 4' }
                 : { strokeWidth: 2.5, stroke: '#1f2937' },
-          labelStyle: { fill: '#111827', fontSize: 11, fontWeight: 600 },
-          markerEnd: isSpouse ? undefined : { type: 'arrowclosed' as any },
         }
       })
 
       setLayoutNodes(nodes)
       setLayoutEdges(edges)
-      onLayoutChange(nodes, edges)
+      onLayoutChange(baseNodes, edges)
     })()
 
     return () => {
@@ -160,6 +224,7 @@ export default function TreeGraph({
         nodes={layoutNodes}
         nodesDraggable={false}
         nodesFocusable
+        edgeTypes={edgeTypes}
         onInit={onInit}
         onNodeClick={(_, node) => {
           const nodeId = String(node.id)
